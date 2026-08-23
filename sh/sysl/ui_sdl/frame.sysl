@@ -1,0 +1,49 @@
+module sh.sysl.ui_sdl
+
+import sh.sysl.ui.Rect
+
+// The arithmetic between a window and an interface, which is the whole of what a phone changes.
+//
+// **A tree is built and measured in points, and a window is pixels.** How many pixels a point is
+// depends on the display, and where a pointer is reported depends on the platform — so the three
+// small conversions below are the entire difference between an interface drawn on a laptop and the
+// same one drawn on a phone. They are ordinary functions rather than lines inside the loop because
+// they are the part that can be wrong without crashing, and a wrong one is a whole interface at the
+// wrong size.
+
+// The scale to draw at, from what the display says.
+//
+// **Never less than one.** SDL answers `0.0` when it cannot tell and the binding already substitutes
+// one; a zero reaching a layout would multiply every size in it to nothing, which is a whole
+// interface drawn correctly at no size at all.
+scale_of(display: f32) -> real
+    val k = real(display)
+
+    if k < 1.0 then 1.0 else k
+end scale_of
+
+// How far a pointer coordinate has to be multiplied to land in points.
+//
+// **SDL reports the pointer in window units and draws in pixels, and on a high-density display those
+// are not the same.** The ratio is measured from the two sizes rather than assumed, because which
+// convention a platform uses is exactly the thing nothing documents the same way twice: on one the
+// window is already pixels and the ratio is one, on another it is the density.
+point_scale(window_w: int, pixel_w: int, k: real) -> real
+    if window_w <= 0 || pixel_w <= 0 then return 1.0 / k
+
+    real(pixel_w) / real(window_w) / k
+end point_scale
+
+// The rectangle an interface is drawn in: the window in points, less the system bars.
+//
+// **The bars are in pixels and the interface is in points**, so they are divided on the way in. On a
+// desktop they are all zero and this is the whole window.
+frame_rect(pixel_w: int, pixel_h: int, k: real, left: int, top: int, right: int,
+           bottom: int) -> Rect
+    val x = int(real(left) / k)
+    val y = int(real(top) / k)
+    val w = int((real(pixel_w) - real(left) - real(right)) / k)
+    val h = int((real(pixel_h) - real(top) - real(bottom)) / k)
+
+    Rect(x, y, if w < 0 then 0 else w, if h < 0 then 0 else h)
+end frame_rect

@@ -1,0 +1,49 @@
+module sh.sysl.ui_sdl
+
+import sh.sysl.ui.{Key, Press}
+import sh.sysl.sdl3.{KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, SCANCODE_BACKSPACE, SCANCODE_DELETE,
+                     SCANCODE_LEFT, SCANCODE_RIGHT, SCANCODE_UP, SCANCODE_DOWN, SCANCODE_HOME,
+                     SCANCODE_END, SCANCODE_RETURN, SCANCODE_TAB}
+
+// SDL's keyboard, as syslUI's.
+//
+// **Only the keys an editing surface cares about are mapped, and the letters are not among them.**
+// Typed text arrives as a `TextInput` event, already composed by the platform, and that is the only
+// way an accent, a CJK composition, a phone's suggestion bar or a paste ever produces a character. A
+// driver that mapped letters would get two of everything on a desktop and the wrong thing everywhere
+// else.
+//
+// **Everything unmapped answers `None` and stays the application's.** ⌘C is a shortcut, escape is a
+// decision about a dialog, and a field that swallowed either would be one nothing could get out of.
+
+// What a scancode means to a field, if anything.
+key_of(sc: i32) -> Option[Key] =
+    sc match
+        SCANCODE_BACKSPACE -> Some(Key.Backspace)
+        SCANCODE_DELETE -> Some(Key.Delete)
+        SCANCODE_LEFT -> Some(Key.Left)
+        SCANCODE_RIGHT -> Some(Key.Right)
+        SCANCODE_UP -> Some(Key.Up)
+        SCANCODE_DOWN -> Some(Key.Down)
+        SCANCODE_HOME -> Some(Key.Home)
+        SCANCODE_END -> Some(Key.End)
+        SCANCODE_RETURN -> Some(Key.Enter)
+        SCANCODE_TAB -> Some(Key.Tab)
+        _ -> None
+
+// Whether a modifier state means "extend the selection".
+holding_shift(mods: u16) -> bool = (mods & KMOD_SHIFT) != 0u16
+
+// And whether it means "by words".
+//
+// **Alt counts, because a Mac moves by word with it.** Which physical key means this is a platform
+// convention rather than a fact about editing, so the decision is made here and the toolkit is told
+// only that a word motion was asked for.
+by_word(mods: u16) -> bool = (mods & (KMOD_CTRL | KMOD_ALT)) != 0u16
+
+// A scancode and its modifiers, as a press a field can apply — or nothing, for a key that is not an
+// editing key at all.
+press_of(sc: i32, mods: u16) -> Option[Press] =
+    key_of(sc) match
+        Some(k) -> Some(Press(k, holding_shift(mods), by_word(mods)))
+        None -> None

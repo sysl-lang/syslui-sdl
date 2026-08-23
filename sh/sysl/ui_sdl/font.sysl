@@ -1,0 +1,34 @@
+module sh.sysl.ui_sdl
+
+import sysl.fs.is_file
+
+// A font file the machine already has.
+//
+// **This is the third thing SDL does not make platform-independent**, after the entry point and the
+// system bars — and it is the one nobody expects. PlutoVG rasterizes glyphs itself and wants a file;
+// there is no fontconfig on a phone, no API on any of these platforms that answers "a sans-serif
+// face, please", and the paths are conventions rather than a contract.
+//
+// **The list is ordered by how sure the file is to be there rather than by how much anybody likes
+// it.** Every Android since 4.0 has Roboto at the first Android path; every macOS has Arial
+// Supplemental; the three Linux entries are the layouts the common distributions use.
+//
+// An application that cares which face it draws in passes its own path and never calls this.
+system_font() -> string
+    val candidates = [
+        "/system/fonts/Roboto-Regular.ttf",
+        "/system/fonts/NotoSans-Regular.ttf",
+        "/system/fonts/DroidSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/System/Library/Fonts/Helvetica.ttc"
+    ]
+
+    for i in 0..<candidates.len
+        if is_file(candidates[i]) then return candidates[i]
+
+    ""
+end system_font

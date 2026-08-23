@@ -1,0 +1,112 @@
+module sh.sysl.ui_sdl
+@tests
+
+import sh.sysl.ui.{Key, Press, Rect}
+import sh.sysl.sdl3.{KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, SCANCODE_BACKSPACE, SCANCODE_LEFT,
+                     SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE}
+import sysl.fs.is_file
+
+// What can be tested without a window, which is exactly the part that can be wrong without crashing.
+//
+// **The loop itself is proved by the two applications that use it** — `syslui-demo` on a desktop and
+// `syslui-android` on a phone — because a frame loop needs a display server, a font and a
+// compositor, and a test that mocked all three would be asserting the mock. What is here instead is
+// the arithmetic and the mapping: a wrong scale is a whole interface at the wrong size, and a wrong
+// key is a field that will not take a backspace.
+
+// ## The keyboard
+
+@test
+private the_editing_keys_are_mapped()
+    assert(key_of(SCANCODE_BACKSPACE) == Some(Key.Backspace))
+    assert(key_of(SCANCODE_LEFT) == Some(Key.Left))
+    assert(key_of(SCANCODE_HOME) == Some(Key.Home))
+    assert(key_of(SCANCODE_RETURN) == Some(Key.Enter))
+end the_editing_keys_are_mapped
+
+// **A letter is not an editing key and must not be mapped.** Typed text arrives as a `TextInput`,
+// already composed by the platform, and a driver that also mapped the letter would type everything
+// twice on a desktop and produce the wrong character everywhere an input method is involved.
+@test
+private a_letter_is_not_mapped()
+    assert(key_of(SCANCODE_A).is_none(), "typed text is a TextInput, not a key")
+    assert(key_of(SCANCODE_ESCAPE).is_none(), "and escape is a decision, which is the program's")
+end a_letter_is_not_mapped
+
+@test
+private shift_extends_and_control_moves_by_words()
+    assert(holding_shift(KMOD_SHIFT))
+    assert(!holding_shift(KMOD_CTRL))
+    assert(by_word(KMOD_CTRL))
+
+    // **Alt counts as by-word because a Mac moves by word with it.** Which physical key means this
+    // is a platform convention, so it is decided here rather than in the toolkit.
+    assert(by_word(KMOD_ALT), "a Mac moves by word with alt")
+    assert(!by_word(KMOD_SHIFT))
+    assert(!by_word(KMOD_GUI), "and the command key is left for shortcuts")
+end shift_extends_and_control_moves_by_words
+
+@test
+private a_press_carries_its_modifiers()
+    assert(press_of(SCANCODE_LEFT, KMOD_SHIFT) == Some(Press(Key.Left, true, false)))
+    assert(press_of(SCANCODE_RIGHT, KMOD_CTRL) == Some(Press(Key.Right, false, true)))
+    assert(press_of(SCANCODE_A, KMOD_SHIFT).is_none(), "and an unmapped key stays unmapped")
+end a_press_carries_its_modifiers
+
+// ## The arithmetic between a window and an interface
+
+@test
+private a_scale_is_never_less_than_one()
+    assert(scale_of(2.75) == 2.75, "a phone")
+    assert(scale_of(1.0) == 1.0, "an ordinary display")
+
+    // A zero reaching a layout would multiply every size in it to nothing -- a whole interface drawn
+    // correctly at no size at all, which is far worse than an unscaled one.
+    assert(scale_of(0.0) == 1.0, "and a display that will not say is one")
+    assert(scale_of(-3.0) == 1.0)
+end a_scale_is_never_less_than_one
+
+// **The pointer's units are measured rather than assumed**, because which convention a platform uses
+// is the thing nothing documents the same way twice.
+@test
+private a_pointer_lands_in_points()
+    // A phone: the window is already pixels, so the ratio is one and only the scale divides.
+    assert(point_scale(1080, 1080, 2.75) == 1.0 / 2.75, "a window reported in pixels")
+
+    // A retina laptop: the window is in points at half the pixels, and the scale is two.
+    assert(point_scale(900, 1800, 2.0) == 1.0, "a window reported in points on a 2x display")
+
+    // An ordinary display: nothing moves at all.
+    assert(point_scale(900, 900, 1.0) == 1.0)
+
+    // A window that has not been made yet answers zero, and dividing by it would end the frame.
+    assert(point_scale(0, 0, 2.0) == 0.5, "a size that is not known yet is still safe")
+end a_pointer_lands_in_points
+
+// The interface is the window in points, less the system bars — and the bars are in pixels.
+@test
+private the_frame_is_the_window_less_the_bars()
+    assert(frame_rect(1080, 2400, 2.75, 0, 0, 0, 0) == Rect(0, 0, 392, 872), "a phone, bars aside")
+    assert(frame_rect(1080, 2400, 2.75, 0, 110, 0, 66) == Rect(0, 40, 392, 808), "with them")
+    assert(frame_rect(900, 660, 1.0, 0, 0, 0, 0) == Rect(0, 0, 900, 660), "a desktop is the window")
+end the_frame_is_the_window_less_the_bars
+
+// **Bars wider than the window leave nothing rather than a negative rectangle**, which is what a
+// phone reports for one frame while it is being turned.
+@test
+private bars_bigger_than_the_window_leave_nothing()
+    val r = frame_rect(100, 100, 1.0, 80, 80, 80, 80)
+
+    assert(r.w == 0 && r.h == 0, s"${r.w}x${r.h}")
+end bars_bigger_than_the_window_leave_nothing
+
+// ## The font
+
+// **A machine either has one of these or it does not**, and the honest test is that the answer is a
+// file when it is not empty — not that any particular face is installed.
+@test
+private the_system_font_is_a_file_or_nothing()
+    val path = system_font()
+
+    assert(path == "" || is_file(path), s"'${path}'")
+end the_system_font_is_a_file_or_nothing

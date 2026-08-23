@@ -1,0 +1,30 @@
+// syslUI's SDL3 driver — the window, the frame loop and the events, for a desktop and for a phone.
+//
+// **It is a separate package rather than part of syslUI, and the reason is the link line.** A link
+// directive is never pruned, so putting SDL3 in the toolkit's own manifest would put `-lSDL3` on
+// every consumer's link line — including a panel driver on a microcontroller that has no window
+// system at all. That is the same argument that makes SDL3 four packages in this org rather than
+// one, and it is why `sh.sysl.ui` names nothing but `sysl.*` and PlutoVG.
+//
+//     dependencies {
+//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.0" }
+//     }
+//
+// A program naming this one gets syslUI with it, so it names only this.
+package {
+  name    = "syslui-sdl"
+  version = "0.1.0"
+}
+
+dependencies {
+  syslui  { git = "github.com/sysl-lang/syslui",  version = "0.1.0" }
+  sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.1" }
+  plutovg { git = "github.com/sysl-lang/plutovg", version = "0.2.1" }
+}
+
+// `os` is the clock the frame loop paces on; `posix` is the font file PlutoVG rasterizes from.
+requires {
+  os    = true
+  posix = true
+  heap  = true
+}

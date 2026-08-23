@@ -1,0 +1,259 @@
+module sh.sysl.ui_sdl
+
+import sh.sysl.ui.*
+import sh.sysl.plutovg
+import sh.sysl.sdl3.{PixelFormat, TextureAccess, Event, EventKind, init, create_window, poll_event,
+                     ticks_ns, error, set_hint, INIT_VIDEO, WINDOW_RESIZABLE}
+import sysl.slices.as_ptr
+
+// The window, the frame loop and the events — the half of an application that is the same on every
+// machine, written once.
+//
+// **syslUI draws and does not present**, which is the split the whole toolkit is built on: what it
+// produces is a block of premultiplied ARGB32 pixels, and getting those onto a screen is somebody
+// else's job. This is that somebody, for the case where the screen belongs to SDL3.
+//
+// **One driver rather than a desktop one and a phone one, and the measurement is why.** Of the
+// hundred and twenty lines an Android frame loop takes, about seventeen were genuinely
+// platform-specific — the entry point, the system bars, and one hint about orientation. Everything
+// else was identical, and most of what *looked* like phone code was a desktop program taking
+// shortcuts that a fixed-size, density-unaware window allows. Two packages would be two copies of
+// the same loop kept in sync by hand.
+//
+// **What an application still owns**, and what stays outside this file:
+//
+//   - **the entry point**, which is `main` on a desktop and an `@export("SDL_main")` on Android,
+//     because Java looks the symbol up rather than calling it;
+//   - **the JNI method that reports the system bars**, whose symbol is mangled from the
+//     application's own package name and so cannot live in a library — it calls `set_insets` below;
+//   - **its shortcuts**: ⌘C, escape, the mouse wheel. `on_event` sees every event first.
+
+// Where the interface is drawn, what it is, and what the window is cleared to.
+//
+// **The tree is a function rather than a value** because it is rebuilt whenever anything has been
+// written — that is what a rebuild *is*, a function of the application's state — and the loop cannot
+// know which signals were read.
+struct App
+    title: string
+
+    // The window to ask for, in points. **On a phone this decides only which way up the activity
+    // starts**: SDL reads the requested shape, and wider-than-tall turns a phone sideways.
+    width: int
+    height: int
+
+    tree: &Fn() -> &View
+
+    // What the window is cleared to, which is the application's colour rather than the toolkit's: a
+    // `Theme` says what an interface's own surfaces look like and nothing about what is behind them.
+    ground: &Fn() -> u32
+
+    // Every event, before the driver looks at it. Answer `true` to say it has been dealt with.
+    //
+    // **This is where a shortcut goes**, and it is deliberately the whole event rather than a
+    // narrower callback: what a program wants from the keyboard is unbounded, and a driver that
+    // guessed would be wrong for the second program that used it.
+    on_event: &Fn(Event) -> bool
+
+    // A font file, or the empty string to take whatever the machine has.
+    font: string
+
+    // The text size, in points.
+    size: f32
+end App
+
+// An application, with the parts most of them do not need already answered.
+app(title: string, tree: &Fn() -> &View, ground: &Fn() -> u32, width: int = 900,
+    height: int = 660, on_event: &Fn(Event) -> bool = e -> false, font: string = "",
+    size: f32 = 15.0) -> &App =
+    App(title, width, height, tree, ground, on_event, font, size)
+
+// ## What an Android application has to reach
+
+// The system bars, in **pixels**, as the Java side reported them.
+//
+// **They are plain `var`s with constant initializers and must stay that way.** A program built by
+// `sysl build-c` — which is every Android app — has no sysl `main` to run module initializers, so an
+// `@export`ed function may not reach module storage that has to be *computed*. That is what a boxed
+// counter in syslUI cost, once.
+//
+// **Written on the UI thread and read on SDL's, deliberately without a lock**: four independent
+// stores are the one shape where a lock buys nothing worth having, and the worst a reader can see is
+// one frame laid out against a mix of old and new values, on the frame the phone was turned.
+var inset_left: int = 0
+var inset_top: int = 0
+var inset_right: int = 0
+var inset_bottom: int = 0
+
+// Told by the application's JNI entry point. **That entry point cannot live here**: JNI resolves a
+// native method by mangling the *application's* package and class into the symbol name, so the
+// `@export` belongs to whoever owns the package. What it does is call this.
+set_insets(l: int, t: int, r: int, b: int)
+    inset_left = l
+    inset_top = t
+    inset_right = r
+    inset_bottom = b
+end set_insets
+
+// Whether the loop should stop, and how anything says so.
+//
+// **One window to a process**, which is what `SDL_main` gives an Android program anyway and what
+// every desktop program here wants. A second window would want this to be a field.
+var stopped: bool = false
+
+// End the frame loop. An application calls this from a button, a shortcut or a menu.
+stop() = stopped = true
+
+// ## The loop
+
+// Open the window and run until something stops it.
+//
+// **The frame is drawn every time round whether anything changed or not**, and that is not waste: a
+// hover easing toward its colour is a change to the *picture* and not to the state, so a loop that
+// only repainted after a rebuild would animate in steps of one tap.
+run(a: &App) -> Result[unit, string]
+    // **Set before `init`, because a hint is read when the thing it configures is created**, and on
+    // Android the activity's orientation is decided during startup. The hint alone is not enough:
+    // `SDLActivity.setOrientationBis` only promotes "both allowed" to *follow the device* when the
+    // window is resizable, so the two together are what make it follow the phone.
+    set_hint("SDL_ORIENTATIONS", "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight")
+
+    if !init(INIT_VIDEO) then return Err(s"SDL would not start: ${error()}")
+
+    val path = if a.font != "" then a.font else system_font()
+
+    if path == "" then return Err("no font this driver knows about is on this machine")
+
+    val window = create_window(a.title, i32(a.width), i32(a.height),
+                               WINDOW_RESIZABLE).expect("a window")
+    val renderer = window.create_renderer().expect("a renderer")
+    val face = plutovg.font(path).expect(s"the font at ${path} opened")
+
+    renderer.set_vsync(true)
+    stopped = false
+
+    // The surface, its canvas and the texture are the size of the window in **pixels**, and all
+    // three are rebuilt when that changes — which on a phone means when it is turned. They start at
+    // one pixel because the first frame rebuilds them anyway, and asking SDL for the size before the
+    // window exists is the other way to get this wrong.
+    var have_w = 0
+    var have_h = 0
+    var surf = plutovg.surface(1, 1).expect("a drawing surface")
+    var vg = plutovg.canvas(surf).expect("a drawing canvas")
+    var tex = renderer.create_texture(PixelFormat.Argb8888, TextureAccess.Streaming, i32(1),
+                                      i32(1)).expect("a streaming texture")
+    var c = pluto_canvas(vg, face, a.size)
+
+    var tree = (a.tree)()
+    var seen = writes() - 1
+    var mx = 0
+    var my = 0
+    var down = false
+    var focused = NOBODY
+    var last = ticks_ns()
+
+    while !stopped
+        val (pw, ph) = window.size_in_pixels()
+        val (ww, wh) = window.size()
+        val k = scale_of(window.display_scale())
+
+        if int(pw) != have_w || int(ph) != have_h
+            surf = plutovg.surface(int(pw), int(ph)).expect("a drawing surface")
+            vg = plutovg.canvas(surf).expect("a drawing canvas")
+            tex = renderer.create_texture(PixelFormat.Argb8888, TextureAccess.Streaming, pw, ph)
+                          .expect("a streaming texture")
+            c = pluto_canvas(vg, face, a.size)
+            have_w = int(pw)
+            have_h = int(ph)
+            focused = NOBODY
+
+        val to_point = point_scale(int(ww), int(pw), k)
+
+        loop
+            poll_event() match
+                Some(e) ->
+                    if (a.on_event)(e) then continue
+
+                    val kind = e.kind()
+
+                    if kind == EventKind.Quit then stopped = true
+
+                    // **Typed text arrives already composed**, which is why a field takes a run of
+                    // text rather than a character.
+                    elif kind == EventKind.TextInput
+                        c.key(typed(e.text()))
+                    elif kind == EventKind.KeyDown
+                        press_of(e.key_scancode(), e.key_mod()) match
+                            Some(p) -> c.key(p)
+                            None -> ()
+
+                    // **A tap is a mouse button**, because SDL synthesises mouse events from touch
+                    // unless it is told otherwise — which is why nothing here handles a finger.
+                    elif kind == EventKind.MouseButtonDown
+                        mx = int(real(e.mouse_x()) * to_point)
+                        my = int(real(e.mouse_y()) * to_point)
+                        down = true
+
+                        // **The pointer is put where the click was before the hit list is
+                        // consulted**, so a control reading the pointer during the paint that
+                        // follows sees the press where it happened rather than where the mouse last
+                        // moved.
+                        c.point(mx, my, true)
+                        c.taps.tap(mx, my)
+                    elif kind == EventKind.MouseMotion
+                        mx = int(real(e.mouse_x()) * to_point)
+                        my = int(real(e.mouse_y()) * to_point)
+                    elif kind == EventKind.MouseButtonUp
+                        down = false
+                None -> break
+
+        // **The on-screen keyboard is asked for and dismissed by focus**, which is the one place a
+        // phone needs the toolkit to answer a question rather than the other way round. On a desktop
+        // both calls are harmless, and `start_text_input` is needed there anyway or SDL sends no
+        // typed text at all.
+        if c.focus() != focused
+            focused = c.focus()
+
+            if focused == NOBODY then window.stop_text_input() else window.start_text_input()
+
+        val now = ticks_ns()
+        var dt = real(now - last) / 1.0e9
+
+        // An application sent to the background stops the loop for as long as it is away, and an
+        // unclamped step would put every animation through its whole travel on the way back.
+        if dt > 0.25 then dt = 0.25
+
+        last = now
+
+        // **`writes()` is one counter for the whole application**, compared against what this loop
+        // last saw. A `dirty` signal registered on every piece of state is a line per signal and the
+        // one somebody forgets is a control that draws correctly and silently never updates.
+        if writes() != seen
+            tree = (a.tree)()
+            seen = writes()
+
+        c.point(mx, my, down)
+        c.tick(dt)
+        c.taps.reset()
+
+        val bg = (a.ground)()
+
+        surf.clear(fraction(bg, 16), fraction(bg, 8), fraction(bg, 0))
+
+        // **The scale is set on the canvas rather than applied to the layout**, so a rounded corner
+        // and a glyph are rasterized at the pixel size they end up at. Scaling the finished picture
+        // instead would be one bilinear blur over the whole interface.
+        vg.reset_transform()
+        vg.scale(f32(k), f32(k))
+
+        // **`render` rather than `measure` and `paint`**, because a frame is the tree *and* whatever
+        // the tree raised above itself — and because it is what ends the frame's keys.
+        render(tree, &c, frame_rect(int(pw), int(ph), k, inset_left, inset_top, inset_right,
+                                    inset_bottom))
+
+        tex.update(as_ptr(surf.data()), i32(surf.stride()))
+        renderer.clear()
+        renderer.copy(tex)
+        renderer.present()
+
+    Ok(())
+end run
