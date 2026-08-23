@@ -5,11 +5,15 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
+  syslui     { git = "github.com/sysl-lang/syslui",     version = "0.1.0" }
   syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.0" }
 }
 ```
 
-A program naming this gets syslUI with it, so it names only this.
+**Both, and that is a rule rather than an oversight: a dependency is not transitive.** Naming this
+package fetches syslUI with it and does *not* let a program `import sh.sysl.ui` — a module is
+importable only from the package that names it, so what a program uses it declares. A program that
+built a tree would have named the toolkit anyway.
 
 ## What an application is
 
