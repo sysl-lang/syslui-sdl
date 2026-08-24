@@ -5,15 +5,14 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui     { git = "github.com/sysl-lang/syslui",     version = "0.1.0" }
   syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.0" }
 }
 ```
 
-**Both, and that is a rule rather than an oversight: a dependency is not transitive.** Naming this
-package fetches syslUI with it and does *not* let a program `import sh.sysl.ui` — a module is
-importable only from the package that names it, so what a program uses it declares. A program that
-built a tree would have named the toolkit anyway.
+**One, because imports are transitive** — naming this package reaches syslUI, SDL3 and PlutoVG
+through it, so a manifest names what a project takes rather than everything it can see. That needs
+**sysl 0.0.73 or newer**; on 0.0.72 a program had to name all four, which is what prompted the
+language change.
 
 ## What an application is
 
