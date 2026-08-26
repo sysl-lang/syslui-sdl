@@ -7,17 +7,17 @@
 // one, and it is why `sh.sysl.ui` names nothing but `sysl.*` and PlutoVG.
 //
 //     dependencies {
-//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.0" }
+//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.1" }
 //     }
 //
 // A program naming this one gets syslUI with it, so it names only this.
 package {
   name    = "syslui-sdl"
-  version = "0.1.0"
+  version = "0.1.1"
 }
 
 dependencies {
-  syslui  { git = "github.com/sysl-lang/syslui",  version = "0.1.0" }
+  syslui  { git = "github.com/sysl-lang/syslui",  version = "0.1.1" }
   sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.1" }
   plutovg { git = "github.com/sysl-lang/plutovg", version = "0.2.1" }
 }
