@@ -7,17 +7,28 @@
 // one, and it is why `sh.sysl.ui` names nothing but `sysl.*` and PlutoVG.
 //
 //     dependencies {
-//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.1" }
+//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.0" }
 //     }
 //
 // A program naming this one gets syslUI with it, so it names only this.
+//
+// **0.2.0 removes `set_insets`, which is why it is not 0.1.2.** The system bars used to be pushed
+// into this module by the application's own JNI entry point, because the symbol JNI looks up is
+// mangled from the *application's* package and so the `@export` could not live in a library.
+// `sysl-lang/skitter` fixes the activity's class, which fixes the symbol, which makes the bridge a
+// library's — so this driver reads the bars itself and an application forwards nothing. A program on
+// 0.1.1 that called `set_insets` deletes that call and its JNI export together.
 package {
   name    = "syslui-sdl"
-  version = "0.1.1"
+  version = "0.2.0"
 }
 
+// **Skitter is here for the parts of a phone SDL does not answer**, and it brings SDL3 with it. What
+// this driver takes from it is the system bars and the orientation pair — both of which were written
+// out here until 0.2.0, and neither of which is a thing a driver should be deciding on its own.
 dependencies {
   syslui  { git = "github.com/sysl-lang/syslui",  version = "0.1.1" }
+  skitter { git = "github.com/sysl-lang/skitter", version = "0.1.0" }
   sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.1" }
   plutovg { git = "github.com/sysl-lang/plutovg", version = "0.2.1" }
 }

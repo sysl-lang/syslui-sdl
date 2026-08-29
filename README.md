@@ -56,10 +56,17 @@ program taking shortcuts a fixed-size, density-unaware window allows.
 | surface and texture rebuilt on resize | **no** — any resizable window |
 | `start`/`stop_text_input` on focus | **no** — needed on a desktop too, and `stop` is a no-op there |
 | `@export("SDL_main")` instead of `main` | **yes** |
-| the JNI method reporting the system bars | **yes** |
-| `SDL_ORIENTATIONS` + `WINDOW_RESIZABLE` | **yes**, and harmless elsewhere |
+| the JNI method reporting the system bars | **yes**, and it is `sysl-lang/skitter`'s now |
+| `SDL_ORIENTATIONS` + `WINDOW_RESIZABLE` | **yes**, and Skitter's too |
 
 Two packages would be two copies of one loop kept in sync by hand.
+
+**Two of those three rows moved out of this package at 0.2.0**, which is worth reading as a
+correction to the measurement rather than a change of mind about it. Seventeen platform-specific
+lines was right; what was wrong was assuming they had to live in the *driver*. The system bars and
+the orientation pair are facts about Android, not about SDL or about drawing, and
+[`skitter`](https://github.com/sysl-lang/skitter) is where they belong — so this package is down to
+the one row that genuinely cannot move, the entry point, which is the application's anyway.
 
 ## Why it is not part of syslUI
 
@@ -82,8 +89,10 @@ texture are the same call. Three things are left, and all three are handled here
 - **The system bars.** From Android API 35 an app draws edge to edge whether it asks to or not.
   `window.safe_area()` is the obvious answer and the wrong rectangle: SDL builds it from five inset
   types at once because it answers *where can a button go*, which on a gesture-navigation phone is 78
-  pixels off each side. So the Java side reports `WindowInsets.Type.systemBars()` and the application
-  hands them over with `set_insets`.
+  pixels off each side. So the Java side reports `WindowInsets.Type.systemBars()` — and as of 0.2.0
+  this driver reads them straight from Skitter, once a frame, at the one place they are used. **An
+  application forwards nothing.** All zero on a desktop, which is the honest answer for a program
+  with a whole window.
 - **The font.** PlutoVG rasterizes glyphs itself and wants a file; there is no fontconfig on a phone
   and no API anywhere that answers "a sans-serif face, please". `system_font()` tries the paths the
   common platforms use, and an application that cares passes its own.
@@ -91,9 +100,13 @@ texture are the same call. Three things are left, and all three are handled here
 ## What stays with the application
 
 - **The entry point** — `main`, or an `@export("SDL_main")`.
-- **The JNI method that reports the insets.** Its symbol is mangled from the *application's* own
-  package name (`Java_<package>_MainActivity_nativeSetSystemBars`), so it cannot live in a library.
-  Eight lines, and it calls `set_insets`.
+- **~~The JNI method that reports the insets.~~ Not any more, and it is the reason for 0.2.0.** Its
+  symbol is mangled from a class's package, so while the activity had to be renamed into each
+  application's package the export had to be hand-written to match — and this driver kept four
+  `int`s and a `set_insets` for it to call. Skitter fixes the activity at
+  `sh.sysl.skitter.SkitterActivity`, which fixes the symbol, which lets the bridge be a library's.
+  **A program upgrading from 0.1.1 deletes its export and its `set_insets` call together**; there is
+  nothing to replace them with, which is the point.
 - **Its shortcuts.** `on_event` sees every event before the driver does and answers `true` to say it
   has dealt with one — which is where ⌘C, escape and the mouse wheel go. A driver that guessed at
   those would be wrong for the second program that used it.

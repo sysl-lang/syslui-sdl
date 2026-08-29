@@ -4,6 +4,7 @@ module sh.sysl.ui_sdl
 import sh.sysl.ui.{Key, Press, Rect}
 import sh.sysl.sdl3.{KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE}
+import sh.sysl.skitter.{Insets, insets, set_system_bars}
 import sysl.fs.is_file
 
 // What can be tested without a window, which is exactly the part that can be wrong without crashing.
@@ -99,6 +100,47 @@ private bars_bigger_than_the_window_leave_nothing()
 
     assert(r.w == 0 && r.h == 0, s"${r.w}x${r.h}")
 end bars_bigger_than_the_window_leave_nothing
+
+// **Where the bars come FROM, which is the whole of what 0.2.0 changed.** Until this version an
+// application pushed them in through a `set_insets` this module owned, and the JNI export that
+// called it had to be written by hand in every application because the symbol is mangled from the
+// application's own package. Skitter fixes the activity's class, so the bridge is a library's — and
+// this test drives that bridge and asserts the frame the loop would lay out against.
+//
+// **It is a composition test and it could not have been written before**, because there was no path
+// from Skitter's storage to this module at all. What it would catch is the wiring being dropped or
+// the four edges being read in the wrong order, either of which draws a plausible interface slightly
+// wrong on every phone and nothing else notices.
+@test
+private the_bars_arrive_from_skitters_bridge()
+    // Six arguments because JNI hands a native method the environment and the instance first, and
+    // this drives the exported function exactly as Android would.
+    set_system_bars(null, null, 0, 110, 0, 66)
+
+    val ins = insets()
+
+    assert_eq(ins, Insets(0, 110, 0, 66), "the bridge's four edges, in order")
+
+    // The same rectangle the test above pins with the numbers written out, reached through the
+    // bridge instead — so a wiring that dropped an edge or swapped two fails here and nowhere else.
+    assert(frame_rect(1080, 2400, 2.75, ins.left, ins.top, ins.right, ins.bottom) ==
+           Rect(0, 40, 392, 808), "the phone's own numbers, through the bridge")
+
+    // A rotation replaces them rather than accumulating, and the next frame is laid out against the
+    // new ones with nothing having had to notice the phone turned.
+    set_system_bars(null, null, 80, 0, 40, 0)
+
+    val turned = insets()
+
+    assert_eq(turned, Insets(80, 0, 40, 0), "and the second report replaces the first")
+    assert(frame_rect(2400, 1080, 2.75, turned.left, turned.top, turned.right, turned.bottom) ==
+           frame_rect(2400, 1080, 2.75, 80, 0, 40, 0), "on the very next frame")
+
+    // Left as it was found: this is module storage shared with every other test in the run.
+    set_system_bars(null, null, 0, 0, 0, 0)
+
+    assert_eq(insets(), Insets(0, 0, 0, 0))
+end the_bars_arrive_from_skitters_bridge
 
 // ## The font
 

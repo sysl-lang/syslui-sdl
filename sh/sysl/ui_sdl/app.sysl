@@ -3,7 +3,8 @@ module sh.sysl.ui_sdl
 import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{PixelFormat, TextureAccess, Event, EventKind, init, create_window, poll_event,
-                     ticks_ns, error, set_hint, INIT_VIDEO, WINDOW_RESIZABLE}
+                     ticks_ns, error, INIT_VIDEO}
+import sh.sysl.skitter.{insets, orient, window_flags}
 import sysl.slices.as_ptr
 
 // The window, the frame loop and the events — the half of an application that is the same on every
@@ -68,31 +69,20 @@ app(title: string, tree: &Fn() -> &View, ground: &Fn() -> u32, width: int = 900,
     App(title, width, height, tree, ground, on_event, font, size)
 
 // ## What an Android application has to reach
-
-// The system bars, in **pixels**, as the Java side reported them.
 //
-// **They are plain `var`s with constant initializers and must stay that way.** A program built by
-// `sysl build-c` — which is every Android app — has no sysl `main` to run module initializers, so an
-// `@export`ed function may not reach module storage that has to be *computed*. That is what a boxed
-// counter in syslUI cost, once.
+// **Nothing, as of this version, and that is the change.** The system bars used to arrive here: this
+// module kept four `int`s and a `set_insets` for the application's JNI entry point to call, because
+// JNI mangles a native method's symbol from the *application's* package and so the `@export` could
+// not live in a library.
 //
-// **Written on the UI thread and read on SDL's, deliberately without a lock**: four independent
-// stores are the one shape where a lock buys nothing worth having, and the worst a reader can see is
-// one frame laid out against a mix of old and new values, on the frame the phone was turned.
-var inset_left: int = 0
-var inset_top: int = 0
-var inset_right: int = 0
-var inset_bottom: int = 0
-
-// Told by the application's JNI entry point. **That entry point cannot live here**: JNI resolves a
-// native method by mangling the *application's* package and class into the symbol name, so the
-// `@export` belongs to whoever owns the package. What it does is call this.
-set_insets(l: int, t: int, r: int, b: int)
-    inset_left = l
-    inset_top = t
-    inset_right = r
-    inset_bottom = b
-end set_insets
+// `sysl-lang/skitter` fixes the activity at `sh.sysl.skitter.SkitterActivity`, which fixes the
+// symbol, which is what makes the bridge a library's — so the bars are read from there and an
+// application forwards nothing. It also owns the orientation pair `run` used to write out below.
+//
+// **The bars are read every frame rather than stored**, which is not a cost worth avoiding: it is
+// four loads of module storage that Android's UI thread wrote, and reading them at the one place
+// they are used is what makes a rotation land on the next frame without anything having to notice
+// it happened.
 
 // Whether the loop should stop, and how anything says so.
 //
@@ -111,11 +101,12 @@ stop() = stopped = true
 // hover easing toward its colour is a change to the *picture* and not to the state, so a loop that
 // only repainted after a rebuild would animate in steps of one tap.
 run(a: &App) -> Result[unit, string]
-    // **Set before `init`, because a hint is read when the thing it configures is created**, and on
-    // Android the activity's orientation is decided during startup. The hint alone is not enough:
-    // `SDLActivity.setOrientationBis` only promotes "both allowed" to *follow the device* when the
-    // window is resizable, so the two together are what make it follow the phone.
-    set_hint("SDL_ORIENTATIONS", "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight")
+    // **Before `init`, because a hint is read when the thing it configures is created**, and on
+    // Android the activity's orientation is decided during startup. Skitter's, because the hint
+    // alone is not enough — `SDLActivity.setOrientationBis` only promotes "all four allowed" into
+    // *follow the device* when the window is also resizable, and `window_flags` below is the other
+    // half of the same setting. Both are harmless on a desktop, which has no such hint.
+    orient()
 
     if !init(INIT_VIDEO) then return Err(s"SDL would not start: ${error()}")
 
@@ -124,7 +115,7 @@ run(a: &App) -> Result[unit, string]
     if path == "" then return Err("no font this driver knows about is on this machine")
 
     val window = create_window(a.title, i32(a.width), i32(a.height),
-                               WINDOW_RESIZABLE).expect("a window")
+                               window_flags()).expect("a window")
     val renderer = window.create_renderer().expect("a renderer")
     val face = plutovg.font(path).expect(s"the font at ${path} opened")
 
@@ -247,8 +238,14 @@ run(a: &App) -> Result[unit, string]
 
         // **`render` rather than `measure` and `paint`**, because a frame is the tree *and* whatever
         // the tree raised above itself — and because it is what ends the frame's keys.
-        render(tree, &c, frame_rect(int(pw), int(ph), k, inset_left, inset_top, inset_right,
-                                    inset_bottom))
+        //
+        // **The bars are asked for here, once a frame.** Android reports them before the first frame
+        // and again on every rotation, and reading them at the point they are used is what makes a
+        // turned phone land on the next frame rather than on the next signal write. On a desktop
+        // they are all zero, which is the honest answer for a program that has a whole window.
+        val ins = insets()
+
+        render(tree, &c, frame_rect(int(pw), int(ph), k, ins.left, ins.top, ins.right, ins.bottom))
 
         tex.update(as_ptr(surf.data()), i32(surf.stride()))
         renderer.clear()
