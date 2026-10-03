@@ -196,6 +196,34 @@ private a_quiet_hook_rebuilds_nothing()
     assert(!defaulted, "the default hook is quiet")
 end a_quiet_hook_rebuilds_nothing
 
+// ## The wheel
+
+// **A notch away from the user moves the content down**, which is the sense the canvas answers in,
+// and a notch to the right moves it left.
+@test
+private a_wheel_notch_is_a_step_in_the_canvas_sense()
+    val (x, y) = wheel_points(0.0, 1.0)
+
+    assert(x == 0.0, s"${x}")
+    assert(y == 40.0, s"away from the user shows what is above: ${y}")
+
+    val (rx, ry) = wheel_points(1.0, -1.0)
+
+    assert(rx == -40.0, s"to the right moves the content left: ${rx}")
+    assert(ry == -40.0, s"toward the user shows what is below: ${ry}")
+end a_wheel_notch_is_a_step_in_the_canvas_sense
+
+// **A trackpad's fractions pass through as fractions**, not rounded to a whole step either way --
+// a slow glide reports a tenth of a step at a time and has to move a tenth of one.
+@test
+private a_precise_delta_is_not_rounded_to_a_step()
+    val (_, y) = wheel_points(0.0, 0.125)
+    val (x, _) = wheel_points(-0.05, 0.0)
+
+    assert(y == 5.0, s"${y}")
+    assert(x > 1.99 && x < 2.01, s"${x}")
+end a_precise_delta_is_not_rounded_to_a_step
+
 // ## The font
 
 // **A machine either has one of these or it does not**, and the honest test is that the answer is a

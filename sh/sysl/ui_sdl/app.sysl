@@ -3,7 +3,7 @@ module sh.sysl.ui_sdl
 import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{PixelFormat, TextureAccess, Event, EventKind, init, create_window, poll_event,
-                     ticks_ns, error, INIT_VIDEO}
+                     ticks_ns, error, set_hint, INIT_VIDEO}
 import sh.sysl.skitter.{insets, orient, window_flags}
 import sysl.slices.as_ptr
 
@@ -27,7 +27,8 @@ import sysl.slices.as_ptr
 //     because Java looks the symbol up rather than calling it;
 //   - **the JNI method that reports the system bars**, whose symbol is mangled from the
 //     application's own package name and so cannot live in a library — it calls `set_insets` below;
-//   - **its shortcuts**: ⌘C, escape, the mouse wheel. `on_event` sees every event first.
+//   - **its shortcuts**: ⌘C, escape. `on_event` sees every event first, the wheel included, so an
+//     application that wants the wheel for something other than scrolling answers `true` to it.
 
 // Where the interface is drawn, what it is, and what the window is cleared to.
 //
@@ -127,6 +128,26 @@ private[ui_sdl] advance(elapsed_ns: u64, on_frame: &Fn(real) -> unit, seen: int)
     (dt, writes() != seen)
 end advance
 
+// How far a wheel event moves the content, in points and in the sense `Canvas.wheel` answers in:
+// positive `y` moves the content down.
+//
+// **SDL's `y` is positive away from the user, which is already that sense** -- turning a wheel away
+// shows what is above -- and its `x` is positive to the right, which moves the content left.
+//
+// **SDL's `direction` is deliberately not read.** `FLIPPED` says the platform has applied natural
+// scrolling, so the values are already the ones the person asked for; multiplying them back is how a
+// game recovers which way the hardware turned, and for a list it would undo the setting.
+//
+// **A trackpad's deltas are fractions of a step and pass through as fractions**, never rounded to
+// whole lines: the canvas adds them up, so a slow glide moves the content a point at a time rather
+// than not at all. A notched wheel reports whole steps, and a step is `WHEEL_STEP` points.
+private[ui_sdl] wheel_points(x: f32, y: f32) -> (real, real) =
+    (-real(x) * WHEEL_STEP, real(y) * WHEEL_STEP)
+
+// One notch of a wheel, in points: two and a half rows of sixteen-point text, about what a desktop
+// moves a document by.
+private const WHEEL_STEP: real = 40.0
+
 // Open the window and run until something stops it.
 //
 // **The frame is drawn every time round whether anything changed or not**, and that is not waste: a
@@ -139,6 +160,11 @@ run(a: &App) -> Result[unit, string]
     // *follow the device* when the window is also resizable, and `window_flags` below is the other
     // half of the same setting. Both are harmless on a desktop, which has no such hint.
     orient()
+
+    // **A trackpad on a Mac glides on after the fingers lift, and SDL drops that unless asked**, so
+    // a list would stop dead under a flick every other program there carries on with. It is read at
+    // `init`, and every other platform ignores it.
+    set_hint("SDL_MAC_SCROLL_MOMENTUM", "1")
 
     if !init(INIT_VIDEO) then return Err(s"SDL would not start: ${error()}")
 
@@ -216,17 +242,26 @@ run(a: &App) -> Result[unit, string]
                         my = int(real(e.mouse_y()) * to_point)
                         down = true
 
-                        // **The pointer is put where the click was before the hit list is
-                        // consulted**, so a control reading the pointer during the paint that
-                        // follows sees the press where it happened rather than where the mouse last
-                        // moved.
+                        // **The pointer is put where the press was at once**, so a control reading
+                        // the pointer during the paint that follows sees the press where it happened
+                        // rather than where the mouse last moved.
                         c.point(mx, my, true)
-                        c.taps.tap(mx, my)
                     elif kind == EventKind.MouseMotion
                         mx = int(real(e.mouse_x()) * to_point)
                         my = int(real(e.mouse_y()) * to_point)
+
+                    // **The tap is the release's**, because only then is it known that the press
+                    // was not the start of a drag: a finger scrolling a list of buttons must not
+                    // press the one it landed on. The canvas decides; see `PlutoCanvas.release`.
                     elif kind == EventKind.MouseButtonUp
+                        mx = int(real(e.mouse_x()) * to_point)
+                        my = int(real(e.mouse_y()) * to_point)
                         down = false
+                        c.release(mx, my)
+                    elif kind == EventKind.MouseWheel
+                        val (dx, dy) = wheel_points(e.wheel_x(), e.wheel_y())
+
+                        c.spin(dx, dy)
                 None -> break
 
         // **The on-screen keyboard is asked for and dismissed by focus**, which is the one place a

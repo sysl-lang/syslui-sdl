@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.1" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.2" }
 }
 ```
 
@@ -97,6 +97,21 @@ texture are the same call. Three things are left, and all three are handled here
   and no API anywhere that answers "a sans-serif face, please". `system_font()` tries the paths the
   common platforms use, and an application that cares passes its own.
 
+## Scrolling: a finger, the wheel and a trackpad (since 0.2.2)
+
+syslUI 0.1.5's `scroll` follows a dragged finger and the wheel, and this driver feeds it both:
+
+- **A tap lands at the release.** A button coming up calls the canvas's `release`, which taps only if
+  the press was not taken as a drag — so a finger scrolling a list of buttons presses none of them.
+  On a phone a finger *is* the mouse here, since SDL synthesises mouse events from touch.
+- **`SDL_EVENT_MOUSE_WHEEL` becomes points**: one notch is 40, and a trackpad's fractional deltas pass
+  through as fractions, which the canvas adds up so a slow glide still moves. `wheel_points` is the
+  conversion, and the tests reach it as a function.
+- **SDL's `direction` is not read, on purpose.** `FLIPPED` means the platform has already applied
+  natural scrolling, so the values are the ones the person chose; flipping them back would undo it.
+- **A Mac trackpad glides on after the fingers lift**, because the driver sets
+  `SDL_MAC_SCROLL_MOMENTUM` before `init`. A dragged finger does not: there is no fling yet.
+
 ## What stays with the application
 
 - **The entry point** — `main`, or an `@export("SDL_main")`.
@@ -108,8 +123,9 @@ texture are the same call. Three things are left, and all three are handled here
   **A program upgrading from 0.1.1 deletes its export and its `set_insets` call together**; there is
   nothing to replace them with, which is the point.
 - **Its shortcuts.** `on_event` sees every event before the driver does and answers `true` to say it
-  has dealt with one — which is where ⌘C, escape and the mouse wheel go. A driver that guessed at
-  those would be wrong for the second program that used it.
+  has dealt with one — which is where ⌘C and escape go. A driver that guessed at those would be
+  wrong for the second program that used it. The wheel is the driver's since 0.2.2, because it
+  scrolls a list; a program wanting it for something else answers `true` to it here.
 - **Its own work, once a frame.** `on_frame` (since 0.2.1) is handed the frame's step in seconds —
   clamped, like the animations' — after the events and before the loop decides whether to rebuild,
   so a signal written there rebuilds the tree on the same frame. It is for a program that is not
@@ -127,9 +143,10 @@ texture are the same call. Three things are left, and all three are handled here
 sysl test .
 ```
 
-Thirteen, and they cover **the part that can be wrong without crashing**: the key mapping, the scale,
-the pointer units, the frame rectangle, and the application's share of a frame — that `on_frame` is
-handed the clamped step and that a signal it writes rebuilds the tree on that same frame. A wrong scale is a whole interface at the wrong size and a
+Fifteen, and they cover **the part that can be wrong without crashing**: the key mapping, the scale,
+the pointer units, the frame rectangle, the application's share of a frame — that `on_frame` is
+handed the clamped step and that a signal it writes rebuilds the tree on that same frame — and the
+wheel's sense and its fractions. A wrong scale is a whole interface at the wrong size and a
 wrong key is a field that will not take a backspace, while a frame loop needs a display server, a
 font and a compositor — a test that mocked all three would be asserting the mock. **The loop itself
 is proved by the two applications that use it**, `syslui-demo` on a desktop and `syslui-android` on
