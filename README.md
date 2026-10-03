@@ -136,6 +136,21 @@ syslUI 0.1.5's `scroll` follows a dragged finger and the wheel, and this driver 
   ```
   run(app("Tuner", () -> screen(), () -> 0x12141C, on_frame = dt -> listen(mic, dt)))
   ```
+- **What it gives back while it is away.** `on_pause` and `on_resume` (since 0.2.3) run once each
+  way when the program leaves the screen and comes back — on Android, the Home button, another app
+  in front, the screen going off. A tuner closes its recording stream in one and opens it in the
+  other, so the system's microphone indicator goes out while it is in the background. SDL sends each
+  direction as a will/did pair and the hook belongs to whichever half arrives first; `Terminating`
+  pauses too, if nothing paused first. **Nothing is drawn and `on_frame` is not called in between**:
+  under SDL's default `SDL_ANDROID_BLOCK_ON_PAUSE` the loop is parked in the event pump anyway, and
+  with that hint off the pump wakes ten times a second and those wake-ups are not frames.
+  **A desktop never fires either**: minimising a window is `WindowMinimized`, not a pause, and the
+  program keeps running — `on_event` sees it if a program wants to act on it.
+
+  ```
+  run(app("Tuner", () -> screen(), () -> 0x12141C, on_frame = dt -> listen(mic, dt),
+          on_pause = () -> mic.close(), on_resume = () -> mic.open()))
+  ```
 
 ## Tests
 
@@ -143,10 +158,11 @@ syslUI 0.1.5's `scroll` follows a dragged finger and the wheel, and this driver 
 sysl test .
 ```
 
-Fifteen, and they cover **the part that can be wrong without crashing**: the key mapping, the scale,
+Eighteen, and they cover **the part that can be wrong without crashing**: the key mapping, the scale,
 the pointer units, the frame rectangle, the application's share of a frame — that `on_frame` is
-handed the clamped step and that a signal it writes rebuilds the tree on that same frame — and the
-wheel's sense and its fractions. A wrong scale is a whole interface at the wrong size and a
+handed the clamped step and that a signal it writes rebuilds the tree on that same frame — the
+wheel's sense and its fractions, and which events pause and resume, with each will/did pair firing
+its hook once. A wrong scale is a whole interface at the wrong size and a
 wrong key is a field that will not take a backspace, while a frame loop needs a display server, a
 font and a compositor — a test that mocked all three would be asserting the mock. **The loop itself
 is proved by the two applications that use it**, `syslui-demo` on a desktop and `syslui-android` on
