@@ -2,7 +2,7 @@ module sh.sysl.ui_sdl
 @tests
 
 import sh.sysl.ui.{Key, Press, Rect, signal, text, writes}
-import sh.sysl.sdl3.{KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, SCANCODE_BACKSPACE, SCANCODE_LEFT,
+import sh.sysl.sdl3.{EventKind, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE}
 import sh.sysl.skitter.{Insets, insets, set_system_bars}
 import sysl.fs.is_file
@@ -195,6 +195,71 @@ private a_quiet_hook_rebuilds_nothing()
 
     assert(!defaulted, "the default hook is quiet")
 end a_quiet_hook_rebuilds_nothing
+
+// ## Leaving the screen and coming back
+
+// Run `kinds` through `lifecycle` from on screen, answering how many times each hook fired and
+// whether the application ended away.
+private trip(kinds: []const EventKind) -> (int, int, bool)
+    val paused = signal(0)
+    val resumed = signal(0)
+    var away = false
+
+    for k in kinds
+        away = lifecycle(k, away, () -> paused.set(paused.read() + 1),
+                         () -> resumed.set(resumed.read() + 1))
+
+    (paused.read(), resumed.read(), away)
+end trip
+
+// **Either half of the way out pauses, and either half of the way back resumes**, so a platform that
+// sent only one of a pair would still be heard.
+@test
+private each_lifecycle_event_drives_its_hook()
+    assert_eq(trip([EventKind.WillEnterBackground]), (1, 0, true), "will enter background")
+    assert_eq(trip([EventKind.DidEnterBackground]), (1, 0, true), "did enter background")
+    assert_eq(trip([EventKind.Terminating]), (1, 0, true), "terminating")
+    assert_eq(trip([EventKind.DidEnterBackground, EventKind.WillEnterForeground]), (1, 1, false),
+              "will enter foreground")
+    assert_eq(trip([EventKind.DidEnterBackground, EventKind.DidEnterForeground]), (1, 1, false),
+              "did enter foreground")
+
+// **The pair is one crossing, so a microphone is closed once and opened once** — the second half
+// finding it already closed would be an error from the application's own stream, or worse, a second
+// stream opened over the first.
+@test
+private a_pair_fires_its_hook_once()
+    val whole = [EventKind.WillEnterBackground, EventKind.DidEnterBackground,
+                 EventKind.WillEnterForeground, EventKind.DidEnterForeground]
+
+    assert_eq(trip(whole), (1, 1, false), "out and back")
+    assert_eq(trip([EventKind.WillEnterBackground, EventKind.DidEnterBackground,
+                    EventKind.Terminating]), (1, 0, true), "a destroy after a pause pauses nothing")
+
+    val twice = [EventKind.WillEnterBackground, EventKind.DidEnterBackground,
+                 EventKind.WillEnterForeground, EventKind.DidEnterForeground,
+                 EventKind.WillEnterBackground, EventKind.DidEnterBackground,
+                 EventKind.WillEnterForeground, EventKind.DidEnterForeground]
+
+    assert_eq(trip(twice), (2, 2, false), "every trip is its own")
+end a_pair_fires_its_hook_once
+
+// **Nothing else is a crossing.** Coming back without having left resumes nothing, a low-memory
+// warning arrives while the program is still on screen, and a minimised desktop window keeps running.
+@test
+private an_unrelated_event_fires_nothing()
+    assert_eq(trip([EventKind.MouseMotion, EventKind.KeyDown, EventKind.Quit]), (0, 0, false))
+    assert_eq(trip([EventKind.LowMemory]), (0, 0, false), "low memory")
+    assert_eq(trip([EventKind.WindowMinimized, EventKind.WindowRestored]), (0, 0, false),
+              "minimised")
+    assert_eq(trip([EventKind.WillEnterForeground, EventKind.DidEnterForeground]), (0, 0, false),
+              "back without leaving")
+
+    val a = app("t", () -> text("t"), () -> 0)
+
+    assert(lifecycle(EventKind.DidEnterBackground, false, a.on_pause, a.on_resume),
+           "the default hooks still mark the crossing")
+end an_unrelated_event_fires_nothing
 
 // ## The wheel
 

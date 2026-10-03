@@ -66,6 +66,16 @@ struct App
     // draw.
     on_frame: &Fn(real) -> unit
 
+    // The application is leaving the screen, and coming back to it.
+    //
+    // **This is where a program gives back what the system shows it holding** — a microphone, a
+    // camera, a location fix — so the indicator for it goes out while the program is away, and where
+    // it takes the thing up again on return. Each runs once per trip, on the loop's own thread, and
+    // `on_frame` is not called between them: see `lifecycle` for which events drive them and on which
+    // machines they fire at all.
+    on_pause: &Fn() -> unit
+    on_resume: &Fn() -> unit
+
     // A font file, or the empty string to take whatever the machine has.
     font: string
 
@@ -76,8 +86,9 @@ end App
 // An application, with the parts most of them do not need already answered.
 app(title: string, tree: &Fn() -> &View, ground: &Fn() -> u32, width: int = 900,
     height: int = 660, on_event: &Fn(Event) -> bool = e -> false, font: string = "",
-    size: f32 = 15.0, on_frame: &Fn(real) -> unit = dt -> ()) -> &App =
-    App(title, width, height, tree, ground, on_event, on_frame, font, size)
+    size: f32 = 15.0, on_frame: &Fn(real) -> unit = dt -> (), on_pause: &Fn() -> unit = () -> (),
+    on_resume: &Fn() -> unit = () -> ()) -> &App =
+    App(title, width, height, tree, ground, on_event, on_frame, on_pause, on_resume, font, size)
 
 // ## What an Android application has to reach
 //
@@ -127,6 +138,41 @@ private[ui_sdl] advance(elapsed_ns: u64, on_frame: &Fn(real) -> unit, seen: int)
     // somebody forgets is a control that draws correctly and silently never updates.
     (dt, writes() != seen)
 end advance
+
+// Whether the application is away from the screen after `kind`, calling the hook for a crossing.
+//
+// **Each direction arrives as a pair, and the hook belongs to whichever half comes first.** SDL sends
+// `WillEnterBackground` then `DidEnterBackground`, and on the way back `WillEnterForeground` then
+// `DidEnterForeground`; `away` is what makes the second half of a pair do nothing. The earlier half is
+// the right one to act on going out, since the sooner a microphone is closed the sooner its indicator
+// goes out, and nothing about coming back needs the later one.
+//
+// **`Terminating` is a pause too**, when nothing paused first: a program being destroyed is leaving
+// the screen for good, and what `on_pause` gives back is exactly what it should not still hold.
+// `LowMemory` is not — the program is still on screen — and every other event leaves `away` alone.
+//
+// **Where these fire.** On Android, from the activity's `onPause` and `onResume`: the Home button,
+// another app in front, the screen going off. SDL 3.4 handles those on this loop's own thread, inside
+// the event pump, so they arrive through `poll_event` before anything is suspended — which is why the
+// queue is enough here, the header's advice to use an event watch notwithstanding. iOS sends the same
+// four. **A desktop sends none of them**: minimising a window is `WindowMinimized` and
+// `WindowRestored`, the program keeps running, and a hook that closed a microphone there would cut off
+// a recorder somebody had merely tucked out of the way.
+private[ui_sdl] lifecycle(kind: EventKind, away: bool, on_pause: &Fn() -> unit,
+                          on_resume: &Fn() -> unit) -> bool
+    val leaving = kind == EventKind.WillEnterBackground || kind == EventKind.DidEnterBackground ||
+                  kind == EventKind.Terminating
+    val returning = kind == EventKind.WillEnterForeground || kind == EventKind.DidEnterForeground
+
+    if leaving && !away
+        on_pause()
+        true
+    elif returning && away
+        on_resume()
+        false
+    else
+        away
+end lifecycle
 
 // How far a wheel event moves the content, in points and in the sense `Canvas.wheel` answers in:
 // positive `y` moves the content down.
@@ -198,6 +244,7 @@ run(a: &App) -> Result[unit, string]
     var my = 0
     var down = false
     var focused = NOBODY
+    var away = false
     var last = ticks_ns()
 
     while !stopped
@@ -223,6 +270,8 @@ run(a: &App) -> Result[unit, string]
                     if (a.on_event)(e) then continue
 
                     val kind = e.kind()
+
+                    away = lifecycle(kind, away, a.on_pause, a.on_resume)
 
                     if kind == EventKind.Quit then stopped = true
 
@@ -263,6 +312,18 @@ run(a: &App) -> Result[unit, string]
 
                         c.spin(dx, dy)
                 None -> break
+
+        // **Nothing is drawn while the application is away**, and the application's own frame work
+        // stops with it. On Android this costs nothing to say: under SDL's default
+        // `SDL_ANDROID_BLOCK_ON_PAUSE` the next `poll_event` does not return until the activity is
+        // resumed, so the loop is parked in the pump rather than spinning. With that hint set to "0"
+        // the pump wakes every tenth of a second instead, and this is what keeps those wake-ups from
+        // being frames — a surface nobody can see, rendered ten times a second on a battery. The clock
+        // starts again from here, so the first frame back is handed one frame's step rather than the
+        // whole absence.
+        if away
+            last = ticks_ns()
+            continue
 
         // **The on-screen keyboard is asked for and dismissed by focus**, which is the one place a
         // phone needs the toolkit to answer a question rather than the other way round. On a desktop
