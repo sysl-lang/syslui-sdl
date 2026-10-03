@@ -7,7 +7,7 @@
 // one, and it is why `sh.sysl.ui` names nothing but `sysl.*` and PlutoVG.
 //
 //     dependencies {
-//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.2" }
+//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.3" }
 //     }
 //
 // A program naming this one gets syslUI with it, so it names only this.
@@ -20,7 +20,7 @@
 // 0.1.1 that called `set_insets` deletes that call and its JNI export together.
 package {
   name    = "syslui-sdl"
-  version = "0.2.2"
+  version = "0.2.3"
 }
 
 // **Skitter is here for the parts of a phone SDL does not answer**, and it brings SDL3 with it. What
