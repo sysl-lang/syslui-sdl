@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.0" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.1" }
 }
 ```
 
@@ -110,6 +110,16 @@ texture are the same call. Three things are left, and all three are handled here
 - **Its shortcuts.** `on_event` sees every event before the driver does and answers `true` to say it
   has dealt with one — which is where ⌘C, escape and the mouse wheel go. A driver that guessed at
   those would be wrong for the second program that used it.
+- **Its own work, once a frame.** `on_frame` (since 0.2.1) is handed the frame's step in seconds —
+  clamped, like the animations' — after the events and before the loop decides whether to rebuild,
+  so a signal written there rebuilds the tree on the same frame. It is for a program that is not
+  driven by events: a tuner reading the microphone, a game stepping its world. It runs on the loop's
+  thread, so it may write signals freely, and it must not block — a frame is about sixteen
+  milliseconds.
+
+  ```
+  run(app("Tuner", () -> screen(), () -> 0x12141C, on_frame = dt -> listen(mic, dt)))
+  ```
 
 ## Tests
 
@@ -117,8 +127,9 @@ texture are the same call. Three things are left, and all three are handled here
 sysl test .
 ```
 
-Ten, and they cover **the part that can be wrong without crashing**: the key mapping, the scale, the
-pointer units and the frame rectangle. A wrong scale is a whole interface at the wrong size and a
+Thirteen, and they cover **the part that can be wrong without crashing**: the key mapping, the scale,
+the pointer units, the frame rectangle, and the application's share of a frame — that `on_frame` is
+handed the clamped step and that a signal it writes rebuilds the tree on that same frame. A wrong scale is a whole interface at the wrong size and a
 wrong key is a field that will not take a backspace, while a frame loop needs a display server, a
 font and a compositor — a test that mocked all three would be asserting the mock. **The loop itself
 is proved by the two applications that use it**, `syslui-demo` on a desktop and `syslui-android` on

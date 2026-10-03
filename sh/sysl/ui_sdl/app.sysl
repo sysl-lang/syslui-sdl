@@ -55,6 +55,16 @@ struct App
     // guessed would be wrong for the second program that used it.
     on_event: &Fn(Event) -> bool
 
+    // The application's own work, once a frame, handed the seconds since the last one.
+    //
+    // **This is where a program that is not driven by events does its reading** — a microphone, a
+    // socket, a simulation's step. It runs after the frame's events and before the loop decides
+    // whether to rebuild, so a signal written here rebuilds the tree on this same frame. It runs on
+    // the loop's own thread, so it may write signals freely; and it must not block, because a frame
+    // is about sixteen milliseconds and every one of them it holds is a frame the window does not
+    // draw.
+    on_frame: &Fn(real) -> unit
+
     // A font file, or the empty string to take whatever the machine has.
     font: string
 
@@ -65,8 +75,8 @@ end App
 // An application, with the parts most of them do not need already answered.
 app(title: string, tree: &Fn() -> &View, ground: &Fn() -> u32, width: int = 900,
     height: int = 660, on_event: &Fn(Event) -> bool = e -> false, font: string = "",
-    size: f32 = 15.0) -> &App =
-    App(title, width, height, tree, ground, on_event, font, size)
+    size: f32 = 15.0, on_frame: &Fn(real) -> unit = dt -> ()) -> &App =
+    App(title, width, height, tree, ground, on_event, on_frame, font, size)
 
 // ## What an Android application has to reach
 //
@@ -94,6 +104,28 @@ var stopped: bool = false
 stop() = stopped = true
 
 // ## The loop
+
+// The application's share of a frame: how long the frame was, the application's own work, and whether
+// the tree has to be built again — answered as the step and that decision.
+//
+// **The hook runs before the decision**, so a signal it writes is seen by the comparison that follows
+// and the tree is rebuilt on the frame that wrote it rather than one frame late. It is a function of
+// its own rather than lines inside `run` because it is the part of the loop a test can reach without
+// a window.
+private[ui_sdl] advance(elapsed_ns: u64, on_frame: &Fn(real) -> unit, seen: int) -> (real, bool)
+    var dt = real(elapsed_ns) / 1.0e9
+
+    // An application sent to the background stops the loop for as long as it is away, and an
+    // unclamped step would put every animation through its whole travel on the way back.
+    if dt > 0.25 then dt = 0.25
+
+    on_frame(dt)
+
+    // **`writes()` is one counter for the whole application**, compared against what the loop last
+    // saw. A `dirty` signal registered on every piece of state is a line per signal and the one
+    // somebody forgets is a control that draws correctly and silently never updates.
+    (dt, writes() != seen)
+end advance
 
 // Open the window and run until something stops it.
 //
@@ -207,18 +239,11 @@ run(a: &App) -> Result[unit, string]
             if focused == NOBODY then window.stop_text_input() else window.start_text_input()
 
         val now = ticks_ns()
-        var dt = real(now - last) / 1.0e9
-
-        // An application sent to the background stops the loop for as long as it is away, and an
-        // unclamped step would put every animation through its whole travel on the way back.
-        if dt > 0.25 then dt = 0.25
+        val (dt, stale) = advance(now - last, a.on_frame, seen)
 
         last = now
 
-        // **`writes()` is one counter for the whole application**, compared against what this loop
-        // last saw. A `dirty` signal registered on every piece of state is a line per signal and the
-        // one somebody forgets is a control that draws correctly and silently never updates.
-        if writes() != seen
+        if stale
             tree = (a.tree)()
             seen = writes()
 

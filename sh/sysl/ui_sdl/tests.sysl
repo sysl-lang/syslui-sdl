@@ -1,7 +1,7 @@
 module sh.sysl.ui_sdl
 @tests
 
-import sh.sysl.ui.{Key, Press, Rect}
+import sh.sysl.ui.{Key, Press, Rect, signal, text, writes}
 import sh.sysl.sdl3.{KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE}
 import sh.sysl.skitter.{Insets, insets, set_system_bars}
@@ -141,6 +141,60 @@ private the_bars_arrive_from_skitters_bridge()
 
     assert_eq(insets(), Insets(0, 0, 0, 0))
 end the_bars_arrive_from_skitters_bridge
+
+// ## The application's frame
+
+// **The hook is handed the step the animations get**, clamped the same way: a phone back from the
+// background has been away for minutes, and a tuner that integrated over that gap would be as wrong
+// as an animation that ran its whole travel at once.
+@test
+private the_frame_hook_is_handed_the_clamped_step()
+    val heard = signal(0.0)
+    val calls = signal(0)
+    val hook: &Fn(real) -> unit = dt ->
+        heard.set(dt)
+        calls.set(calls.read() + 1)
+
+    val (dt, _) = advance(16000000, hook, writes())
+
+    assert(dt == 0.016, s"${dt}")
+    assert(heard.read() == 0.016, "the hook sees the frame's own step")
+    assert_eq(calls.read(), 1, "once a frame")
+
+    val (away, _) = advance(90000000000, hook, writes())
+
+    assert(away == 0.25, s"${away}")
+    assert(heard.read() == 0.25, "and a long absence arrives clamped")
+    assert_eq(calls.read(), 2)
+end the_frame_hook_is_handed_the_clamped_step
+
+// **A signal the hook writes rebuilds the tree on the frame that wrote it.** The hook runs before the
+// comparison against what the loop last saw, so the write is already counted — the other order would
+// draw every reading one frame late, which nothing but this test would notice.
+@test
+private a_write_in_the_hook_rebuilds_this_frame()
+    val pitch = signal(0.0)
+    val seen = writes()
+
+    val (_, stale) = advance(16000000, dt -> pitch.set(440.0), seen)
+
+    assert(stale, "the hook's write is this frame's")
+    assert(pitch.read() == 440.0)
+end a_write_in_the_hook_rebuilds_this_frame
+
+// **And a hook that writes nothing leaves the tree alone**, as does the default one, so an
+// application that never names the hook rebuilds exactly as often as it did before there was one.
+@test
+private a_quiet_hook_rebuilds_nothing()
+    val (_, idle) = advance(16000000, dt -> (), writes())
+
+    assert(!idle, "nothing written, nothing rebuilt")
+
+    val a = app("t", () -> text("t"), () -> 0)
+    val (_, defaulted) = advance(16000000, a.on_frame, writes())
+
+    assert(!defaulted, "the default hook is quiet")
+end a_quiet_hook_rebuilds_nothing
 
 // ## The font
 
