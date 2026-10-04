@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.3" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.4" }
 }
 ```
 
