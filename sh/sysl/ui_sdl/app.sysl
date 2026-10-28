@@ -11,7 +11,11 @@ import sysl.slices.as_ptr
 #if android
 import sh.sysl.skitter.{insets, orient, window_flags}
 #else
-private[ui_sdl] struct NoInsets { left: int, top: int, right: int, bottom: int }
+private[ui_sdl] struct NoInsets
+    left: int
+    top: int
+    right: int
+    bottom: int
 
 // A desktop program has the whole window: no system bars.
 private[ui_sdl] insets() -> NoInsets = NoInsets(0, 0, 0, 0)
