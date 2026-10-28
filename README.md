@@ -68,6 +68,9 @@ the orientation pair are facts about Android, not about SDL or about drawing, an
 [`skitter`](https://github.com/sysl-lang/skitter) is where they belong — so this package is down to
 the one row that genuinely cannot move, the entry point, which is the application's anyway.
 
+**From 0.2.8 skitter is taken only on Android** (`if = "android"` in the manifest, `#if android` around
+the imports), so a desktop program's binary has none of its JNI exports.
+
 ## Why it is not part of syslUI
 
 **A link directive is never pruned.** Putting SDL3 in the toolkit's own manifest would put `-lSDL3`
