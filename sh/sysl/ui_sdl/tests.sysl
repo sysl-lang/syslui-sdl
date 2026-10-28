@@ -4,7 +4,9 @@ module sh.sysl.ui_sdl
 import sh.sysl.ui.{Key, Press, Rect, signal, text, writes}
 import sh.sysl.sdl3.{EventKind, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE}
+#if android
 import sh.sysl.skitter.{Insets, insets, set_system_bars}
+#endif
 import sysl.fs.is_file
 
 // What can be tested without a window, which is exactly the part that can be wrong without crashing.
@@ -111,6 +113,9 @@ end bars_bigger_than_the_window_leave_nothing
 // from Skitter's storage to this module at all. What it would catch is the wiring being dropped or
 // the four edges being read in the wrong order, either of which draws a plausible interface slightly
 // wrong on every phone and nothing else notices.
+//
+// Skitter is an Android-only dependency, so this test exists only in an Android build.
+#if android
 @test
 private the_bars_arrive_from_skitters_bridge()
     // Six arguments because JNI hands a native method the environment and the instance first, and
@@ -141,6 +146,16 @@ private the_bars_arrive_from_skitters_bridge()
 
     assert_eq(insets(), Insets(0, 0, 0, 0))
 end the_bars_arrive_from_skitters_bridge
+#endif
+
+// On a desktop there are no system bars, and the driver's own answer says so.
+#if !android
+@test
+private a_desktop_has_no_bars_and_a_resizable_window()
+    assert(window_flags() & sh.sysl.sdl3.WINDOW_RESIZABLE != 0)
+    assert_eq(insets().left + insets().top + insets().right + insets().bottom, 0)
+end a_desktop_has_no_bars_and_a_resizable_window
+#endif
 
 // ## The application's frame
 

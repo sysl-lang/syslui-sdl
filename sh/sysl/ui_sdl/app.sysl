@@ -3,9 +3,24 @@ module sh.sysl.ui_sdl
 import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{PixelFormat, TextureAccess, Event, EventKind, init, create_window, poll_event,
-                     ticks_ns, error, set_hint, INIT_VIDEO}
-import sh.sysl.skitter.{insets, orient, window_flags}
+                     ticks_ns, error, set_hint, INIT_VIDEO, WINDOW_RESIZABLE}
 import sysl.slices.as_ptr
+
+// Skitter is a phone framework, so only an Android build has it (the manifest's `if = "android"`),
+// and a desktop program links none of it. The three things taken from it have a desktop answer here.
+#if android
+import sh.sysl.skitter.{insets, orient, window_flags}
+#else
+private[ui_sdl] struct NoInsets { left: int, top: int, right: int, bottom: int }
+
+// A desktop program has the whole window: no system bars.
+private[ui_sdl] insets() -> NoInsets = NoInsets(0, 0, 0, 0)
+
+// A desktop SDL has no orientation hint.
+private[ui_sdl] orient() = ()
+
+private[ui_sdl] window_flags() -> u64 = WINDOW_RESIZABLE
+#endif
 
 // The window, the frame loop and the events — the half of an application that is the same on every
 // machine, written once.
