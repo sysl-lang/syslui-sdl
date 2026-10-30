@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.11" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.12" }
 }
 ```
 
@@ -164,13 +164,73 @@ syslUI 0.1.5's `scroll` follows a dragged finger and the wheel, and this driver 
           on_pause = () -> mic.close(), on_resume = () -> mic.open()))
   ```
 
+## Drawing 3D in part of the window (since 0.2.12)
+
+An application opts in by naming the shader formats it supplies. Without `gpu`, it has today's window
+and renderer and no GPU device.
+
+```
+val view = viewport(f ->
+    val pass = f.pass(0.1, 0.1, 0.1).unwrap()
+
+    pass.bind_pipeline(pipeline)
+    pass.draw(36)
+    pass.finish()
+, (c, r) ->
+    val (dx, dy) = c.drag_by(r, 1, PointerButton.Primary, 2, 2)
+)
+
+run(app("Cube", () -> row([view.flex(), panel]), ground, gpu = GPU_SHADERFORMAT_MSL))
+```
+
+- **Make the viewport once, outside the tree function**, and place the same one at every rebuild: it
+  holds the targets. It takes whatever size layout offers.
+- **`draw` gets a `ViewportFrame`**: `device`, `cmd`, `color`, `depth` and `rect`, its place in the window
+  in pixels. `color` and `depth` are that size and are remade when it changes. `pass(r, g, b)` opens a
+  pass over both, cleared. Record into `cmd` and leave it open; the driver submits it. A pipeline's
+  formats are `VIEWPORT_COLOR_FORMAT` and `viewport_depth_format(device)`.
+- **`input` gets the canvas and the rectangle in points**, as it is painted, so `held`, `modifiers`,
+  `grab_by`, `drag_by` and `wheel` work as they do in any view. A grab and a drag on the same slot are
+  alternatives: a slot claimed by `grab_by` does not then report movement through `drag_by`.
+- **The interface composites over the 3D with premultiplied alpha.** PlutoVG's surface really is
+  premultiplied: half-white over nothing has every channel equal to the alpha, and no soft edge has a
+  channel above its alpha, both asserted. A viewport cuts its rectangle out of the surface when it is
+  painted, on whole device pixels. What the tree painted before it is gone from there, so a background
+  behind it does not hide it; what is painted after it lands on top; a clip in force limits the hole.
+- **Such a window asks for the display's real density**, which an application that did not opt in does
+  not get on a Mac.
+- **`save_frame(file)`** writes the next frame to a PNG, read back from the renderer, in either kind of
+  application. **`frame_timing()`** says where the last frame's time went.
+
+**Time on a 2880 by 1800 window on an M-series laptop's 120 Hz display**, from `examples/cube`, averaged
+over 300 frames: interface repaint 3.0 ms, upload 2.2 ms, recording the 3D 0.05 ms, and 3.8 ms in present,
+which includes the wait for the display; 9.2 ms a frame. The repaint and upload are of the whole surface
+every frame, so they scale with the window and not with what changed.
+
+```
+cd examples/cube
+sysl build . --lib ../..
+./cube
+./cube --frames 300 --shot frame.png
+```
+
+The example's shader is Metal Shading Language, so it runs on a Mac.
+
 ## Tests
 
 ```
 sysl test .
 ```
 
-Eighteen, and they cover **the part that can be wrong without crashing**: the key mapping, the scale,
+**The viewport's tests** check the layout's rectangle, pointer input, what PlutoVG's surface holds, and,
+against a real device with no window, the composite by exact pixels: the premultiplied equation on every
+pixel of a frame with text on it, the panel's edge at twice the density, a clip, a fractional scale, the
+depth target's resizes and its effect, and a button changing what is drawn. **The GPU ones run only where
+`launchctl managername` says `Aqua`**, asked before SDL starts because SDL could block for ever otherwise;
+anywhere else they print that they did not run. An application with no `gpu` is run through the whole loop
+on SDL's dummy driver, and its frame must equal its surface byte for byte.
+
+The other eighteen cover **the part that can be wrong without crashing**: the key mapping, the scale,
 the pointer units, the frame rectangle, the application's share of a frame — that `on_frame` is
 handed the clamped step and that a signal it writes rebuilds the tree on that same frame — the
 wheel's sense and its fractions, and which events pause and resume, with each will/did pair firing

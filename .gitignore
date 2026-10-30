@@ -1,2 +1,4 @@
 # The compiler's cache and any build output.
 *.syslib
+/examples/cube/cube
+/examples/cube/sysl.sum

@@ -1,0 +1,251 @@
+module sh.sysl.ui_sdl
+
+import sh.sysl.ui.*
+import sh.sysl.plutovg
+import sh.sysl.sdl3.{FRect, GpuCommandBuffer, GpuDevice, GpuRenderPass, GpuTexture, PixelFormat, Renderer,
+                     ScaleMode, BlendMode, Texture, TextureAccess, color_target_clear, depth_target_clear,
+                     gpu_texture_view, ticks_ns, GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                     GPU_TEXTUREFORMAT_D16_UNORM, GPU_TEXTUREFORMAT_D24_UNORM, GPU_TEXTUREFORMAT_D32_FLOAT,
+                     GPU_TEXTUREUSAGE_COLOR_TARGET, GPU_TEXTUREUSAGE_SAMPLER,
+                     GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET}
+import sysl.buf.{Buf, buf}
+
+// A part of the window drawn with SDL_GPU, under the interface.
+//
+// **The 3D goes into a texture of the viewport's own size, and the 2D renderer draws that texture and
+// then the interface over it.** Both run on one device, so nothing is copied through the CPU except the
+// interface itself. A viewport owns its colour and depth targets, so its coordinates start at its own
+// corner and a program's projection needs only the target's aspect.
+//
+// **The interface reaches the 3D through a hole.** The interface's surface is opaque with the ground
+// colour, and a viewport clears its own rectangle to nothing at the moment it is painted. What the tree
+// paints before it is gone from that rectangle, so a background behind a viewport does not hide it; what
+// the tree paints after it, a label or a popover, lands on top with its soft edges intact.
+
+// What a viewport's colour target holds, for the `color_format` of a pipeline that draws into it.
+const VIEWPORT_COLOR_FORMAT: i32 = GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+
+// What a viewport's depth target holds on this device, for the `depth_format` of a pipeline: the most
+// precise of the formats devices offer. Only 16 bits is promised everywhere.
+viewport_depth_format(device: &GpuDevice) -> i32
+    if device.supports_texture(GPU_TEXTUREFORMAT_D32_FLOAT, GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
+        GPU_TEXTUREFORMAT_D32_FLOAT
+    elif device.supports_texture(GPU_TEXTUREFORMAT_D24_UNORM, GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
+        GPU_TEXTUREFORMAT_D24_UNORM
+    else
+        GPU_TEXTUREFORMAT_D16_UNORM
+end viewport_depth_format
+
+// One frame of a viewport, handed to its `draw`.
+//
+// `cmd` belongs to the driver, which submits it after every viewport has drawn: record into it and leave
+// it open. `color` and `depth` are this viewport's size, which is `rect.w` by `rect.h` pixels; `rect` is
+// also where it sits in the window.
+struct ViewportFrame
+    device: &GpuDevice
+    cmd: GpuCommandBuffer
+    color: &GpuTexture
+    depth: &GpuTexture
+    rect: Rect
+
+    // A pass over both targets, cleared to this colour and to the far depth.
+    pass(self, r: f32, g: f32, b: f32, a: f32 = 1.0) -> Option[GpuRenderPass] =
+        self.cmd.render_pass_depth([color_target_clear(self.color, r, g, b, a)],
+                                   depth_target_clear(self.depth, 1.0))
+end ViewportFrame
+
+// A view that the application draws into with the GPU.
+//
+// **Make it once, outside the tree function**, and place the same one in the tree at every rebuild: it
+// is what holds the targets, and a tree is rebuilt whenever a signal is written.
+struct Viewport
+    draw: &Fn(ViewportFrame) -> unit
+    input: &Fn(*Canvas, Rect) -> unit
+    points: Rect
+    pixels: Rect
+    color: Option[&GpuTexture]
+    depth: Option[&GpuTexture]
+    shown: Option[&Texture]
+    staged: bool
+
+    // Where it is in the window, in pixels, as of the last paint. A program's picking and its projection
+    // work from this; what arrives at `input` is in points, like everything else from a canvas.
+    rect(&self) -> Rect = self.pixels
+
+    // Have targets of this viewport's size, keeping the ones it has when they already are.
+    private fit(&self, device: &GpuDevice, renderer: &Renderer)
+        val w = u32(self.pixels.w)
+        val h = u32(self.pixels.h)
+
+        self.color match
+            Some(t) -> if t.width == w && t.height == h then return
+            None -> ()
+
+        // The view goes first, because it does not own the texture it shows.
+        self.shown = None
+        self.color = None
+        self.depth = None
+
+        val color = device.texture(VIEWPORT_COLOR_FORMAT, GPU_TEXTUREUSAGE_COLOR_TARGET | GPU_TEXTUREUSAGE_SAMPLER,
+                                   w, h).expect("a viewport's colour target")
+        val depth = device.texture(viewport_depth_format(device), GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, w,
+                                   h).expect("a viewport's depth target")
+        val shown = gpu_texture_view(renderer, color, PixelFormat.Abgr8888).expect("a view of a colour target")
+
+        // A viewport is opaque: whatever alpha the program's shaders leave must not show the clear colour
+        // of the window through its picture.
+        shown.set_blend_mode(BlendMode.Off)
+        shown.set_scale_mode(ScaleMode.Nearest)
+        self.color = Some(color)
+        self.depth = Some(depth)
+        self.shown = Some(shown)
+    end fit
+end Viewport
+
+// A viewport. `draw` runs once a frame while it is in the tree and has an area, after the interface has
+// been painted and before anything reaches the screen. `input` runs as it is painted, with its rectangle
+// in points and the canvas whose `held`, `modifiers`, `grab_by`, `drag_by` and `wheel` answer for the
+// pointer, like any other view reading the pointer.
+//
+// **It draws only in an application made with `app(..., gpu = ...)`.** In any other it is an empty area.
+viewport(draw: &Fn(ViewportFrame) -> unit, input: &Fn(*Canvas, Rect) -> unit = (c, r) -> ()) -> &Viewport =
+    Viewport(draw, input, Rect(0, 0, 0, 0), Rect(0, 0, 0, 0), None, None, None, false)
+
+impl View for Viewport
+    // Whatever it is offered: a viewport has no size of its own, so `.flex()` or `.frame(w, h)` says it.
+    measure(&self, c: *Canvas, avail: Size) -> Size = avail
+
+    paint(&self, c: *Canvas, r: Rect)
+        self.points = r
+        (self.input)(c, r)
+
+        stage match
+            Some(s) -> if c.visible(r) then s.place(self, r)
+            None -> ()
+    end paint
+
+// A rectangle in points, in pixels: each edge rounds on its own, so two views sharing an edge in points
+// share it in pixels at any scale.
+private[ui_sdl] pixel_rect(r: Rect, k: real) -> Rect
+    val x0 = rounded(real(r.x) * k)
+    val y0 = rounded(real(r.y) * k)
+
+    Rect(x0, y0, rounded(real(r.right()) * k) - x0, rounded(real(r.bottom()) * k) - y0)
+end pixel_rect
+
+private rounded(v: real) -> int = int(v + 0.5)
+
+// Where the time of the last frame went, in nanoseconds of this thread. `gpu_ns` is recording and
+// submitting the 3D, not the GPU's own work, and `present_ns` holds the wait for the display, so a frame
+// that keeps up shows the remainder of its interval there.
+struct FrameTiming
+    ui_ns: u64
+    upload_ns: u64
+    gpu_ns: u64
+    present_ns: u64
+
+// The timing of the last frame an application with a `gpu` drew. All zeroes in any other.
+frame_timing() -> FrameTiming = timing
+
+private var timing: FrameTiming = FrameTiming(0, 0, 0, 0)
+
+// The driver's half of the viewports: the device, and which of them this frame's paint reached.
+private[ui_sdl] struct Stage
+    device: &GpuDevice
+    renderer: &Renderer
+    vg: &plutovg.Canvas
+    k: real
+    placed: Buf[&Viewport]
+    known: Buf[&Viewport]
+
+    // Note a viewport as painted at `r`, and clear its pixels out of the interface.
+    //
+    // **The hole is cut in whole device pixels**, so its edge has no partial coverage for the 3D to bleed
+    // through at a fractional scale. The canvas's clip still applies, which is what keeps a viewport in a
+    // scrolled list inside the list.
+    place(&self, v: &Viewport, r: Rect)
+        val px = pixel_rect(r, self.k)
+
+        v.pixels = px
+        self.vg.save()
+        self.vg.reset_transform()
+        self.vg.operator(plutovg.Operator.Clear)
+        self.vg.begin()
+        self.vg.rect(f32(px.x), f32(px.y), f32(px.w), f32(px.h))
+        self.vg.fill()
+        self.vg.restore()
+        self.placed.push(v)
+
+        if !v.staged
+            v.staged = true
+            self.known.push(v)
+    end place
+
+    // Run every placed viewport's `draw`, and send the work to the GPU.
+    draw_all(&self)
+        val cmd = self.device.command_buffer().expect("a command buffer")
+
+        for v in self.placed.view()
+            if v.pixels.w > 0 && v.pixels.h > 0
+                v.fit(self.device, self.renderer)
+                (v.draw)(ViewportFrame(self.device, cmd, v.color.unwrap(), v.depth.unwrap(), v.pixels))
+
+        cmd.submit()
+    end draw_all
+
+    // Draw the viewports, and the interface over them, into the renderer's target. `ui` holds the
+    // surface's premultiplied pixels.
+    composite(&self, ui: &Texture)
+        self.renderer.clear()
+
+        for v in self.placed.view()
+            v.shown match
+                Some(t) ->
+                    val p = v.pixels
+
+                    self.renderer.copy_to(t, FRect(f32(p.x), f32(p.y), f32(p.w), f32(p.h)))
+                None -> ()
+
+        self.renderer.copy(ui)
+        self.placed.clear()
+    end composite
+
+    // Give back everything made on the renderer, since the viewports outlive this driver's run.
+    release(&self)
+        for v in self.known.view()
+            v.shown = None
+            v.color = None
+            v.depth = None
+            v.staged = false
+
+        self.known.clear()
+    end release
+end Stage
+
+private[ui_sdl] stage_on(device: &GpuDevice, renderer: &Renderer, vg: &plutovg.Canvas, k: real) -> &Stage =
+    Stage(device, renderer, vg, k, buf(), buf())
+
+// The stage of the running application, which is how a viewport deep in a tree finds its driver: the
+// `Canvas` a view is handed knows nothing of a device. There is one window to a process (`stopped`).
+private[ui_sdl] var stage: Option[&Stage] = None
+
+// Measure one frame of an application with a `gpu`, between what `run` does before and after it.
+private[ui_sdl] gpu_frame(s: &Stage, ui: &Texture, pixels: *u8, stride: i32, paint_began: u64,
+                          present: &Fn() -> unit)
+    val painted = ticks_ns()
+
+    ui.update(pixels, stride)
+
+    val uploaded = ticks_ns()
+
+    s.draw_all()
+
+    val drew = ticks_ns()
+
+    s.composite(ui)
+    present()
+
+    val done = ticks_ns()
+
+    timing = FrameTiming(painted - paint_began, uploaded - painted, drew - uploaded, done - drew)
+end gpu_frame

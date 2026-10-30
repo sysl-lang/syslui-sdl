@@ -1,0 +1,510 @@
+module sh.sysl.ui_sdl
+@tests
+
+import sh.sysl.ui.*
+import sh.sysl.plutovg
+import sh.sysl.sdl3.{BlendMode, GPU_SHADERFORMAT_MSL, GPU_SHADERSTAGE_FRAGMENT, GPU_SHADERSTAGE_VERTEX, GpuDevice,
+                     GpuPipeline, GpuRenderPass, HINT_VIDEO_DRIVER, MouseButton, PixelFormat, Renderer, ScaleMode, Surface,
+                     Texture, TextureAccess, error, gpu_device, init, INIT_VIDEO, offscreen_gpu_renderer, quit, set_hint}
+import sysl.process
+import sysl.slices.as_ptr
+
+// The viewport, from the layout down to the pixels a renderer composites.
+//
+// **The GPU half needs no window, and runs only inside the macOS desktop session.** A device and a 2D
+// renderer with no window draw into a target texture and are read back; outside the desktop session,
+// starting the platform's video driver can block for ever, so those tests print that they did not run and
+// pass. The swapchain itself is proved by `examples/cube`, run by a person or from a desktop shell.
+
+// Asked before SDL starts, because it is SDL starting that would never return.
+private can_use_gpu(test: string) -> bool
+    val here = process.capture("/bin/launchctl", ["managername"]) match
+        Ok(out) -> out.text.starts_with("Aqua")
+        Err(e) -> false
+
+    if !here then print(s"skipped outside the desktop session: ${test}")
+    here
+end can_use_gpu
+
+// ## Rectangles and layout
+
+@test
+a_rectangle_in_points_lands_on_whole_pixels()
+    val at_two = pixel_rect(Rect(10, 20, 30, 40), 2.0)
+
+    assert_eq(at_two.x, 20, "x doubled")
+    assert_eq(at_two.w, 60, "and the width")
+
+    val left = pixel_rect(Rect(0, 0, 3, 3), 1.5)
+    val right = pixel_rect(Rect(3, 3, 3, 3), 1.5)
+
+    assert_eq(left.right(), right.x, "two views sharing an edge in points share it in pixels")
+    assert_eq(left.w + right.w, 9, "and cover the window with nothing left over")
+    assert_eq(pixel_rect(Rect(5, 5, 0, 0), 2.0).w, 0, "an empty rectangle stays empty")
+
+@test
+the_viewport_learns_its_rectangle_from_the_layout()
+    val v = viewport(f -> ())
+    var c = recorder()
+
+    render(row([v.flex(), spacer().frame(30, 50)]), &c, Rect(0, 0, 100, 50))
+    assert_eq(v.points.x, 0, "at the left")
+    assert_eq(v.points.w, 70, "with what the panel left")
+    assert_eq(v.points.h, 50, "and the whole height")
+
+    render(column([spacer().frame(100, 10), v.flex()]), &c, Rect(0, 0, 100, 50))
+    assert_eq(v.points.y, 10, "and it follows a rebuilt layout")
+    assert_eq(v.points.h, 40, "to its new size")
+
+// A viewport outside an application with a `gpu`, which has nothing to hand it.
+@test
+a_viewport_with_no_driver_never_draws()
+    val drew = signal(false)
+    val v = viewport(f -> drew.set(true))
+    var c = recorder()
+
+    render(v, &c, Rect(0, 0, 100, 50))
+    assert(!drew.read(), "no device, so no draw")
+    assert_eq(v.rect().w, 0, "and no pixels")
+
+// ## Pointer input
+
+@test
+the_input_hook_answers_for_the_pointer_like_any_view()
+    val wheel = signal((0, 0))
+    val grabbed = signal(false)
+    val held = signal(false)
+    val shift = signal(false)
+    val moved = signal((0, 0))
+    val v = viewport(f -> (), (c, r) ->
+        wheel.set(c.wheel(r))
+        grabbed.set(c.grab_by(r, 1, PointerButton.Secondary))
+        held.set(c.held(PointerButton.Secondary))
+        shift.set(c.modifiers().shift)
+    )
+    val dragger = viewport(f -> (), (c, r) -> moved.set(c.drag_by(r, 2, PointerButton.Middle, 0, 0)))
+    var c = recorder()
+    val at = Rect(10, 10, 100, 100)
+
+    mouse_down(&c, MouseButton.Right, 20, 20)
+    c.chord.keys = Modifiers(true, false, false, false)
+    c.spin(0.0, 40.0)
+    v.paint(&c, at)
+    assert(grabbed.read(), "the press was inside")
+    assert(held.read(), "and is still down")
+    assert(shift.read(), "with shift")
+    assert_eq(wheel.read().1, 40, "and the wheel turned over it")
+
+    mouse_down(&c, MouseButton.Middle, 20, 20)
+    dragger.paint(&c, at)
+    c.point(30, 25, false)
+    dragger.paint(&c, at)
+    assert_eq(moved.read().0, 10, "ten points right since the last frame")
+    assert_eq(moved.read().1, 5, "five down")
+
+@test
+a_press_outside_the_viewport_is_not_its_own()
+    val grabbed = signal(false)
+    val v = viewport(f -> (), (c, r) -> grabbed.set(c.grab_by(r, 1, PointerButton.Primary)))
+    var c = recorder()
+
+    c.point(500, 500, true)
+    v.paint(&c, Rect(0, 0, 100, 100))
+    assert(!grabbed.read(), "the press missed it")
+
+// ## What PlutoVG's surface holds
+
+@test
+half_white_on_nothing_is_premultiplied()
+    val s = plutovg.surface(4, 4).unwrap()
+    val vg = plutovg.canvas(s).unwrap()
+
+    s.clear(0.0, 0.0, 0.0, 0.0)
+    vg.rgba(1.0, 1.0, 1.0, 0.5)
+    vg.rect(0.0, 0.0, 4.0, 4.0)
+    vg.fill()
+
+    val px = s.data()
+
+    assert(px[3] == 127u8 || px[3] == 128u8, "half the alpha")
+    assert_eq(px[2], px[3], "red equals the alpha, which unpremultiplied it would not")
+    assert_eq(px[1], px[3], "and green")
+    assert_eq(px[0], px[3], "and blue")
+
+// Every soft edge the toolkit makes on an empty surface: a rounded corner and a glyph. If any channel
+// exceeded the alpha, the premultiplied composite would overflow into a bright fringe.
+@test
+no_soft_edge_has_more_colour_than_coverage()
+    val s = plutovg.surface(120, 40).unwrap()
+    val vg = plutovg.canvas(s).unwrap()
+    var c = pluto_canvas(vg, plutovg.font(system_font()).unwrap(), 15.0)
+
+    s.clear(0.0, 0.0, 0.0, 0.0)
+    c.fill(Rect(2, 2, 40, 30), 0xFFEEDDu32, 12)
+    c.text(Rect(50, 10, 60, 20), "Soft")
+
+    val px = s.data()
+    var soft = 0
+
+    for y in 0..<40
+        for x in 0..<120
+            val at = y * s.stride() + x * 4
+            val a = px[at + 3]
+
+            assert(px[at] <= a && px[at + 1] <= a && px[at + 2] <= a, s"pixel ${x},${y}")
+
+            if a > 0 && a < 255 then soft += 1
+
+    assert(soft > 10, "there were soft edges to check")
+
+// ## The application that did not opt in
+
+@test
+an_application_with_no_gpu_shows_exactly_its_surface()
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+
+    val file = "/tmp/syslui-sdl-opt-out-frame.png"
+    val tree: &Fn() -> &View = () -> text("Opted out").padding(8).background(0x336699u32, 6)
+    val ground: &Fn() -> u32 = () -> 0x223344u32
+    val frames = signal(0)
+    val a = app("opt out", tree, ground, 200, 80, on_frame = dt ->
+        frames.set(frames.read() + 1)
+
+        if frames.read() == 2 then save_frame(file)
+        if frames.read() == 4 then stop()
+    )
+
+    run(a).unwrap()
+    assert(stage.is_none(), "no stage was made")
+    quit()
+
+    val shot = plutovg.load_image(file).unwrap()
+    val want = plutovg.surface(200, 80).unwrap()
+    val vg = plutovg.canvas(want).unwrap()
+    var c = pluto_canvas(vg, plutovg.font(system_font()).unwrap(), 15.0)
+
+    want.clear(fraction(0x223344u32, 16), fraction(0x223344u32, 8), fraction(0x223344u32, 0))
+    vg.reset_transform()
+    render(tree(), &c, frame_rect(200, 80, 1.0, 0, 0, 0, 0))
+
+    assert_eq(shot.data().len, want.data().len, "the same size")
+
+    for i in 0..<want.data().len
+        assert_eq(shot.data()[i], want.data()[i], s"byte ${i}")
+
+// ## The composite
+
+// One frame's worth of everything a window would have, drawing into a target texture.
+private struct Rig
+    device: &GpuDevice
+    renderer: &Renderer
+    target: &Texture
+    ui: &Texture
+    surf: &plutovg.Surface
+    vg: &plutovg.Canvas
+    face: &plutovg.Font
+    w: int
+    h: int
+    k: real
+
+private rig(device: &GpuDevice, renderer: &Renderer, w: int, h: int, k: real) -> &Rig
+    val target = renderer.create_texture(PixelFormat.Argb8888, TextureAccess.Target, i32(w), i32(h)).unwrap()
+    val ui = renderer.create_texture(PixelFormat.Argb8888, TextureAccess.Streaming, i32(w), i32(h)).unwrap()
+    val surf = plutovg.surface(w, h).unwrap()
+    val vg = plutovg.canvas(surf).unwrap()
+
+    ui.set_blend_mode(BlendMode.Premultiplied)
+    ui.set_scale_mode(ScaleMode.Nearest)
+    Rig(device, renderer, target, ui, surf, vg, plutovg.font(system_font()).unwrap(), w, h, k)
+end rig
+
+// What `run` does in a frame, from the paint to the composite, with `after` drawing straight on the
+// surface once the tree has. Answers the composited pixels as ARGB.
+private frame_of(r: &Rig, tree: &View, after: &Fn(&plutovg.Canvas) -> unit = vg -> ()) -> &Surface
+    var c = pluto_canvas(r.vg, r.face, 15.0)
+
+    frame_on(r, &c, tree, after)
+end frame_of
+
+// The same on a canvas the caller keeps, so a press in one frame lands in the next.
+private frame_on(r: &Rig, c: *PlutoCanvas, tree: &View, after: &Fn(&plutovg.Canvas) -> unit = vg -> ()) -> &Surface
+    val s = stage_on(r.device, r.renderer, r.vg, r.k)
+
+    stage = Some(s)
+    c.taps.reset()
+    r.surf.clear(1.0, 1.0, 1.0)
+    r.vg.reset_transform()
+    r.vg.scale(f32(r.k), f32(r.k))
+    render(tree, c, frame_rect(r.w, r.h, r.k, 0, 0, 0, 0))
+    after(r.vg)
+    r.ui.update(as_ptr(r.surf.data()), i32(r.surf.stride()))
+    s.draw_all()
+    r.renderer.set_target(r.target)
+    s.composite(r.ui)
+
+    val out = r.renderer.read_pixels().unwrap().convert(PixelFormat.Argb8888).unwrap()
+
+    r.renderer.present()
+    stage = None
+    out
+end frame_on
+
+// `(r, g, b)` of a pixel of an ARGB surface.
+private rgb_at(s: &Surface, x: int, y: int) -> (int, int, int)
+    val at = y * int(s.pitch()) + x * 4
+
+    (int(s.pixels()[at + 2]), int(s.pixels()[at + 1]), int(s.pixels()[at]))
+end rgb_at
+
+private expect_rgb(s: &Surface, x: int, y: int, r: int, g: int, b: int, what: string)
+    val got = rgb_at(s, x, y)
+
+    assert_eq(got.0, r, s"${what}: red at ${x},${y}")
+    assert_eq(got.1, g, s"${what}: green at ${x},${y}")
+    assert_eq(got.2, b, s"${what}: blue at ${x},${y}")
+end expect_rgb
+
+private device_for_tests() -> &GpuDevice
+    assert(init(INIT_VIDEO), "SDL starts: " + error())
+    gpu_device(GPU_SHADERFORMAT_MSL).unwrap()
+end device_for_tests
+
+// Paints a child and then writes a label over it, which is what an interface drawn on a viewport is.
+private struct Labelled
+    child: &View
+    label: string
+
+impl View for Labelled
+    measure(&self, c: *Canvas, avail: Size) -> Size = avail
+
+    paint(&self, c: *Canvas, r: Rect)
+        self.child.paint(c, r)
+        c.text(Rect(r.x + 4, r.y + 4, 60, 20), self.label)
+    end paint
+
+// A panel is opaque, the viewport shows where nothing was painted over it, the edge between them falls on
+// the pixel the layout says at retina density, and a background behind the viewport does not hide it.
+@test
+a_panel_is_opaque_and_the_viewport_shows_through()
+    if !can_use_gpu("composite") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 200, 100, 2.0)
+    val v = viewport(f -> f.pass(1.0, 0.0, 0.0).unwrap().finish())
+    val panel = spacer().frame(30, 50).background(0x00FF00u32)
+    val out = frame_of(r, row([v.flex(), panel]).background(0x0000FFu32))
+
+    assert_eq(v.rect().w, 140, "the rectangle in pixels")
+    assert_eq(v.rect().h, 100, "at twice the points")
+    expect_rgb(out, 139, 50, 255, 0, 0, "the viewport's last column")
+    expect_rgb(out, 140, 50, 0, 255, 0, "the panel's first")
+    expect_rgb(out, 0, 0, 255, 0, 0, "the corner")
+    expect_rgb(out, 199, 99, 0, 255, 0, "the far corner")
+
+// The equation, on every pixel: what comes out is the surface's premultiplied colour plus red scaled by
+// what the surface left uncovered. Anti-aliased text and a half-transparent fill are on the surface, so
+// this holds across every coverage there is, and a `Blend` composite would fail it at the first soft pixel.
+@test
+soft_interface_edges_composite_exactly_over_the_3d()
+    if !can_use_gpu("soft edges") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 200, 100, 2.0)
+    val v = viewport(f -> f.pass(1.0, 0.0, 0.0).unwrap().finish())
+    val out = frame_of(r, Labelled(v, "Soft"), vg ->
+        vg.rgba(1.0, 1.0, 1.0, 0.5)
+        vg.rect(40.0, 30.0, 20.0, 10.0)
+        vg.fill()
+    )
+    val px = r.surf.data()
+    var soft = 0
+
+    for y in 0..<100
+        for x in 0..<200
+            val at = y * r.surf.stride() + x * 4
+            val a = int(px[at + 3])
+
+            if a > 0 && a < 255 then soft += 1
+
+            expect_rgb(out, x, y, int(px[at + 2]) + 255 - a, int(px[at + 1]), int(px[at]), "over red")
+
+    assert(soft > 100, "the text and the fill were soft")
+
+@test
+a_clip_keeps_the_hole_inside_it()
+    if !can_use_gpu("clip") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 100, 100, 1.0)
+    val v = viewport(f -> f.pass(1.0, 0.0, 0.0).unwrap().finish())
+    val offset = signal(0)
+    val out = frame_of(r, scroll(column([v.frame(100, 300)]), offset, 40))
+
+    expect_rgb(out, 50, 39, 255, 0, 0, "the part in the list")
+    expect_rgb(out, 50, 41, 255, 255, 255, "the ground below it, not the 3D")
+
+@test
+a_fractional_scale_leaves_no_partial_edge()
+    if !can_use_gpu("fractional scale") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 150, 150, 1.5)
+    val v = viewport(f -> f.pass(1.0, 0.0, 0.0).unwrap().finish())
+    val out = frame_of(r, column([spacer().frame(100, 3), row([spacer().frame(3, 90), v.frame(61, 61)])]))
+    val at = v.rect()
+
+    assert_eq(at.x, 5, "3 points is 4.5, rounded")
+    assert_eq(at.w, 91, "64 points ends on 96, rounded")
+    expect_rgb(out, at.x - 1, at.y + 2, 255, 255, 255, "the ground just outside")
+    expect_rgb(out, at.x, at.y + 2, 255, 0, 0, "red on the first column")
+    expect_rgb(out, at.right() - 1, at.y + 2, 255, 0, 0, "and on the last")
+    expect_rgb(out, at.right(), at.y + 2, 255, 255, 255, "and the ground just past")
+
+// A control beside a viewport takes a press as it would anywhere, and what it writes reaches the 3D.
+@test
+a_button_changes_what_the_viewport_draws()
+    if !can_use_gpu("button") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 200, 50, 1.0)
+    val blue = signal(false)
+    val v = viewport(f ->
+        val pass = if blue.read() then f.pass(0.0, 0.0, 1.0) else f.pass(1.0, 0.0, 0.0)
+
+        pass.unwrap().finish()
+    )
+    val tree = row([v.flex(), button("Go", () -> blue.set(true)).frame(100, 50)])
+    var c = pluto_canvas(r.vg, r.face, 15.0)
+
+    expect_rgb(frame_on(r, &c, tree), 10, 10, 255, 0, 0, "before the press")
+    mouse_down(&c, MouseButton.Left, 150, 25)
+    frame_on(r, &c, tree)
+    mouse_up(&c, MouseButton.Left, 150, 25)
+    frame_on(r, &c, tree)
+    expect_rgb(frame_on(r, &c, tree), 10, 10, 0, 0, 255, "after it")
+
+// ## The targets
+
+@test
+the_targets_follow_the_rectangle()
+    if !can_use_gpu("targets") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val cw = signal(0u32)
+    val dw = signal(0u32)
+    val dh = signal(0u32)
+    val draws = signal(0)
+    val v = viewport(f ->
+        draws.set(draws.read() + 1)
+        cw.set(f.color.width)
+        dw.set(f.depth.width)
+        dh.set(f.depth.height)
+        f.pass(0.0, 0.0, 1.0).unwrap().finish()
+    )
+
+    frame_of(rig(dev, renderer, 100, 50, 1.0), v)
+    assert_eq(cw.read(), 100u32, "colour matches the rectangle")
+    assert_eq(dw.read(), 100u32, "and so does depth")
+    assert_eq(dh.read(), 50u32, "in both directions")
+
+    val first = v.depth.unwrap().handle
+    val again = rig(dev, renderer, 100, 50, 1.0)
+
+    frame_of(again, v)
+    assert(v.depth.unwrap().handle == first, "the same size keeps the same target")
+
+    frame_of(rig(dev, renderer, 64, 80, 1.0), v)
+    assert_eq(dw.read(), 64u32, "a resize makes a new one")
+    assert_eq(dh.read(), 80u32, "of the new height")
+    assert_eq(draws.read(), 3, "one draw each frame")
+
+    val out = frame_of(rig(dev, renderer, 64, 80, 1.0), v)
+
+    expect_rgb(out, 63, 79, 0, 0, 255, "and what is drawn into it reaches the last pixel")
+
+@test
+a_viewport_with_no_area_or_out_of_the_tree_does_not_draw()
+    if !can_use_gpu("no area") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 100, 100, 1.0)
+    val draws = signal(0)
+    val v = viewport(f -> draws.set(draws.read() + 1))
+
+    frame_of(r, row([v.frame(0, 0), spacer().flex()]))
+    assert_eq(draws.read(), 0, "no area")
+    frame_of(r, spacer())
+    assert_eq(draws.read(), 0, "not in the tree")
+
+@test
+two_viewports_draw_their_own_targets()
+    if !can_use_gpu("two viewports") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 100, 50, 1.0)
+    val a = viewport(f -> f.pass(1.0, 0.0, 0.0).unwrap().finish())
+    val b = viewport(f -> f.pass(0.0, 0.0, 1.0).unwrap().finish())
+    val out = frame_of(r, row([a.flex(), b.flex()]))
+
+    expect_rgb(out, 49, 25, 255, 0, 0, "the first")
+    expect_rgb(out, 50, 25, 0, 0, 255, "the second")
+
+private val DEPTH_SHADERS: string = raw"""
+#include <metal_stdlib>
+using namespace metal;
+
+struct Out {
+    float4 position [[position]];
+    float4 color;
+};
+
+vertex Out vertex_main(uint id [[vertex_id]], uint which [[instance_id]]) {
+    float2 corners[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
+    Out out;
+    out.position = float4(corners[id], which == 0 ? 0.75 : 0.25, 1.0);
+    out.color = which == 0 ? float4(1.0, 0.0, 0.0, 1.0) : float4(0.0, 1.0, 0.0, 1.0);
+    return out;
+}
+
+fragment float4 fragment_main(Out in [[stage_in]]) {
+    return in.color;
+}
+"""
+
+// The nearer triangle wins whichever is drawn last, and with the depth test off the last wins, which is
+// what shows the depth target is really attached and really cleared.
+private depth_scene(dev: &GpuDevice, renderer: &Renderer, near_first: bool, test_on: bool) -> &Surface
+    val vs = dev.shader(DEPTH_SHADERS, GPU_SHADERFORMAT_MSL, GPU_SHADERSTAGE_VERTEX, "vertex_main").unwrap()
+    val fs = dev.shader(DEPTH_SHADERS, GPU_SHADERFORMAT_MSL, GPU_SHADERSTAGE_FRAGMENT, "fragment_main").unwrap()
+    val pipeline = dev.pipeline(vs, fs, [], [], VIEWPORT_COLOR_FORMAT, depth_format = viewport_depth_format(dev),
+                                depth_test = test_on).unwrap()
+    val v = viewport(f ->
+        val pass = f.pass(0.0, 0.0, 0.0).unwrap()
+
+        pass.bind_pipeline(pipeline)
+        pass.draw(3, 1, 0, if near_first then 1 else 0)
+        pass.draw(3, 1, 0, if near_first then 0 else 1)
+        pass.finish()
+    )
+
+    frame_of(rig(dev, renderer, 16, 16, 1.0), v)
+end depth_scene
+
+@test
+the_depth_target_decides_what_is_in_front()
+    if !can_use_gpu("depth") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+
+    expect_rgb(depth_scene(dev, renderer, true, true), 8, 8, 0, 255, 0, "the near one drawn first")
+    expect_rgb(depth_scene(dev, renderer, false, true), 8, 8, 0, 255, 0, "the near one drawn last")
+    expect_rgb(depth_scene(dev, renderer, true, false), 8, 8, 255, 0, 0, "no depth test, so the last wins")

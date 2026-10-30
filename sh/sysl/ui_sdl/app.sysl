@@ -2,8 +2,9 @@ module sh.sysl.ui_sdl
 
 import sh.sysl.ui.*
 import sh.sysl.plutovg
-import sh.sysl.sdl3.{PixelFormat, TextureAccess, Event, EventKind, init, create_window, poll_event,
-                     ticks_ns, mod_state, error, set_hint, INIT_VIDEO, WINDOW_RESIZABLE}
+import sh.sysl.sdl3.{BlendMode, PixelFormat, Renderer, ScaleMode, Surface, GpuDevice, TextureAccess, Event, EventKind,
+                     init, create_window, create_gpu_renderer, gpu_device, poll_event, ticks_ns, mod_state, error,
+                     set_hint, INIT_VIDEO, WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE}
 import sysl.slices.as_ptr
 
 // Skitter is a phone framework, so only an Android build has it (the manifest's `if = "android"`),
@@ -100,14 +101,18 @@ struct App
 
     // The text size, in points.
     size: f32
+
+    // The shader formats the application supplies, `GPU_SHADERFORMAT_MSL` and so on, which is how it
+    // asks to draw with viewports. Zero means none: a plain window with no GPU device.
+    gpu: u32
 end App
 
 // An application, with the parts most of them do not need already answered.
 app(title: string, tree: &Fn() -> &View, ground: &Fn() -> u32, width: int = 900,
     height: int = 660, on_event: &Fn(Event) -> bool = e -> false, font: string = "",
     size: f32 = 15.0, on_frame: &Fn(real) -> unit = dt -> (), on_pause: &Fn() -> unit = () -> (),
-    on_resume: &Fn() -> unit = () -> ()) -> &App =
-    App(title, width, height, tree, ground, on_event, on_frame, on_pause, on_resume, font, size)
+    on_resume: &Fn() -> unit = () -> (), gpu: u32 = 0) -> &App =
+    App(title, width, height, tree, ground, on_event, on_frame, on_pause, on_resume, font, size, gpu)
 
 // ## What an Android application has to reach
 //
@@ -133,6 +138,43 @@ var stopped: bool = false
 
 // End the frame loop. An application calls this from a button, a shortcut or a menu.
 stop() = stopped = true
+
+// The file the next finished frame is written to, or nothing.
+private var shot_to: string = ""
+
+// Write the next frame to a PNG, read back from the renderer: what the window is about to show, the 3D
+// included, rather than a capture of the desktop.
+save_frame(file: string) = shot_to = file
+
+// Write the frame in the renderer's target to the file, if one was asked for. A failure is printed,
+// since the frame it would have written is still a good frame.
+private take_shot(renderer: &Renderer)
+    if shot_to == "" then return
+
+    val file = shot_to
+
+    shot_to = ""
+
+    val written = renderer.read_pixels().and_then(s -> s.convert(PixelFormat.Argb8888)).map(s -> png_of(s, file))
+
+    if written != Some(true) then print(s"the frame could not be written to ${file}: ${error()}")
+end take_shot
+
+// The SDL surface as a PNG, through PlutoVG's encoder: both hold ARGB32, row by row. Forced opaque,
+// because what a window shows has no alpha and some renderers leave the channel as it was cleared.
+private png_of(s: &Surface, file: string) -> bool
+    val w = int(s.width())
+    val h = int(s.height())
+    val out = plutovg.surface(w, h).expect("a surface for the frame")
+    val to = out.data()
+    val from = s.pixels()
+
+    for y in 0..<h
+        for x in 0..<w * 4
+            to[y * out.stride() + x] = if x % 4 == 3 then 255 else from[y * int(s.pitch()) + x]
+
+    out.write_png(file)
+end png_of
 
 // ## The loop
 
@@ -237,9 +279,23 @@ run(a: &App) -> Result[unit, string]
 
     if path == "" then return Err("no font this driver knows about is on this machine")
 
+    // **Only a window asking for the display's density gets it**, so a Mac's other windows here are drawn
+    // at one pixel to a point and magnified by the system. A viewport wants the real pixels.
+    val density = if a.gpu != 0 then WINDOW_HIGH_PIXEL_DENSITY else 0u64
     val window = create_window(a.title, i32(a.width), i32(a.height),
-                               window_flags()).expect("a window")
-    val renderer = window.create_renderer().expect("a renderer")
+                               window_flags() | density).expect("a window")
+
+    // **An application with viewports has its renderer on a GPU device**, and one without never makes a
+    // device. The device is declared first so it outlives the renderer, as SDL requires.
+    val device = if a.gpu != 0 then
+                     gpu_device(a.gpu) match
+                         Ok(d) -> Some(d)
+                         Err(e) -> return Err(s"no GPU device: ${e}")
+                 else
+                     None
+    val renderer = device match
+        Some(d) -> create_gpu_renderer(window, d).expect("a renderer on the GPU device")
+        None -> window.create_renderer().expect("a renderer")
     val face = plutovg.font(path).expect(s"the font at ${path} opened")
 
     renderer.set_vsync(true)
@@ -286,6 +342,13 @@ run(a: &App) -> Result[unit, string]
             have_w = int(pw)
             have_h = int(ph)
             focused = NOBODY
+
+            device match
+                Some(d) ->
+                    tex.set_blend_mode(BlendMode.Premultiplied)
+                    tex.set_scale_mode(ScaleMode.Nearest)
+                    place_stage(d, renderer, vg, k)
+                None -> ()
 
         val to_point = point_scale(int(ww), int(pw), k)
 
@@ -366,6 +429,7 @@ run(a: &App) -> Result[unit, string]
         c.taps.reset()
 
         val bg = (a.ground)()
+        val paint_began = ticks_ns()
 
         surf.clear(fraction(bg, 16), fraction(bg, 8), fraction(bg, 0))
 
@@ -386,10 +450,36 @@ run(a: &App) -> Result[unit, string]
 
         render(tree, &c, frame_rect(int(pw), int(ph), k, ins.left, ins.top, ins.right, ins.bottom))
 
-        tex.update(as_ptr(surf.data()), i32(surf.stride()))
-        renderer.clear()
-        renderer.copy(tex)
-        renderer.present()
+        stage match
+            Some(s) ->
+                gpu_frame(s, tex, as_ptr(surf.data()), i32(surf.stride()), paint_began, () ->
+                    take_shot(renderer)
+                    renderer.present()
+                )
+            None ->
+                tex.update(as_ptr(surf.data()), i32(surf.stride()))
+                renderer.clear()
+                renderer.copy(tex)
+                take_shot(renderer)
+                renderer.present()
+
+    // The viewports outlive this call and what they show dies with the renderer.
+    stage match
+        Some(s) ->
+            device.unwrap().wait_idle()
+            s.release()
+            stage = None
+        None -> ()
 
     Ok(())
 end run
+
+// Point the stage at the canvas of the current surface, keeping the viewports it has seen. A surface's
+// canvas is replaced whenever the window changes size.
+private place_stage(device: &GpuDevice, renderer: &Renderer, vg: &plutovg.Canvas, k: real)
+    stage match
+        Some(s) ->
+            s.vg = vg
+            s.k = k
+        None -> stage = Some(stage_on(device, renderer, vg, k))
+end place_stage

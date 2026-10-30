@@ -1,0 +1,20 @@
+// A depth-tested cube in a syslUI layout, drawn with SDL_GPU behind the interface.
+//
+//     sysl build . --lib ../.. --lib <a checkout of sdl3>
+//
+// Named by coordinate like any program of the package; `--lib ../..` builds it against this checkout.
+package {
+  name    = "cube"
+  version = "0.0.1"
+  sysl    = "0.8.0"
+}
+
+dependencies {
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.12" }
+}
+
+requires {
+  os    = true
+  posix = true
+  heap  = true
+}

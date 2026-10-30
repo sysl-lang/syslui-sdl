@@ -1,0 +1,193 @@
+// A cube in a viewport, with a panel of controls beside it and a label over it.
+//
+// Drag in the viewport to turn the cube, turn the wheel to move it nearer, and press the button to
+// change its colour.
+//
+//     cube                              a window, until it is closed
+//     cube --frames 300 --shot out.png  300 frames, the last written to a PNG, and the time they took
+//
+// The shader is Metal Shading Language, so this runs on a Mac. A program for other machines supplies a
+// format for each.
+
+import sh.sysl.ui.*
+import sh.sysl.ui_sdl.*
+import sh.sysl.sdl3.{GPU_SHADERFORMAT_MSL, GPU_SHADERSTAGE_FRAGMENT, GPU_SHADERSTAGE_VERTEX, GpuDevice, GpuPipeline}
+import sysl.raw.ptr_cast
+import sysl.text.parse_int
+
+val SHADERS: string = raw"""
+#include <metal_stdlib>
+using namespace metal;
+
+struct Uniforms {
+    float turn;
+    float tilt;
+    float distance;
+    float aspect;
+    float4 tint;
+};
+
+struct Out {
+    float4 position [[position]];
+    float4 color;
+};
+
+// The eight corners, and the two triangles of each of the six faces.
+constant float3 corners[8] = {
+    float3(-1, -1, -1), float3(1, -1, -1), float3(1, 1, -1), float3(-1, 1, -1),
+    float3(-1, -1, 1), float3(1, -1, 1), float3(1, 1, 1), float3(-1, 1, 1),
+};
+constant uint faces[36] = {
+    0, 1, 2, 0, 2, 3,  5, 4, 7, 5, 7, 6,  4, 0, 3, 4, 3, 7,
+    1, 5, 6, 1, 6, 2,  3, 2, 6, 3, 6, 7,  4, 5, 1, 4, 1, 0,
+};
+constant float shades[6] = { 1.0, 0.45, 0.7, 0.85, 0.95, 0.55 };
+
+vertex Out vertex_main(uint id [[vertex_id]], constant Uniforms& u [[buffer(0)]]) {
+    float3 p = corners[faces[id]];
+    float cy = cos(u.turn), sy = sin(u.turn), cx = cos(u.tilt), sx = sin(u.tilt);
+
+    p = float3(cy * p.x + sy * p.z, p.y, cy * p.z - sy * p.x);
+    p = float3(p.x, cx * p.y - sx * p.z, sx * p.y + cx * p.z);
+
+    float z = p.z + u.distance;
+    float focal = 2.0;
+    float near = 0.1, far = 100.0;
+    Out out;
+
+    out.position = float4(p.x * focal / u.aspect, p.y * focal, far / (far - near) * (z - near), z);
+    out.color = float4(u.tint.rgb * shades[id / 6], 1.0);
+    return out;
+}
+
+fragment float4 fragment_main(Out in [[stage_in]]) {
+    return in.color;
+}
+"""
+
+// The vertex shader's uniforms, laid out as `Uniforms` above.
+struct Uniforms
+    turn: f32
+    tilt: f32
+    distance: f32
+    aspect: f32
+    r: f32
+    g: f32
+    b: f32
+    a: f32
+
+// The colours the button steps through.
+val TINTS: [][3]f32 = [[0.95, 0.45, 0.2], [0.25, 0.65, 0.95], [0.4, 0.85, 0.45]]
+
+// The cube's pipeline.
+make_pipeline(dev: &GpuDevice) -> &GpuPipeline
+    val vs = dev.shader(SHADERS, GPU_SHADERFORMAT_MSL, GPU_SHADERSTAGE_VERTEX, "vertex_main",
+                        uniform_buffers = 1).expect("the vertex shader")
+    val fs = dev.shader(SHADERS, GPU_SHADERFORMAT_MSL, GPU_SHADERSTAGE_FRAGMENT,
+                        "fragment_main").expect("the fragment shader")
+
+    dev.pipeline(vs, fs, [], [], VIEWPORT_COLOR_FORMAT,
+                 depth_format = viewport_depth_format(dev)).expect("the pipeline")
+end make_pipeline
+
+// Time spent, summed over the frames measured.
+struct Totals
+    frames: int
+    ui: u64
+    upload: u64
+    gpu: u64
+    present: u64
+    seconds: real
+
+private ms(ns: u64, frames: int) -> real = real(ns) / 1.0e6 / real(frames)
+
+main(args: []string) -> Result[unit, string]
+    var limit = 0
+    var shot = ""
+    var i = 1
+
+    while i + 1 < args.len
+        if args[i] == "--frames" then limit = parse_int(args[i + 1]).unwrap_or(0)
+        if args[i] == "--shot" then shot = args[i + 1]
+
+        i += 2
+
+    val turn = signal(0.5)
+    val tilt = signal(0.4)
+    val distance = signal(5.0)
+    val tint = signal(0)
+    val made = signal[Option[&GpuPipeline]](None)
+
+    val view = viewport(f ->
+        // Made on the first frame, which is the first time there is a device to make it on.
+        val pipeline = made.read() match
+            Some(p) -> p
+            None ->
+                val p = make_pipeline(f.device)
+
+                made.set(Some(p))
+                p
+        val c = TINTS[tint.read() % int(TINTS.len)]
+        var u = Uniforms(f32(turn.read()), f32(tilt.read()), f32(distance.read()), f32(f.rect.w) / f32(f.rect.h),
+                         c[0], c[1], c[2], 1.0)
+
+        f.cmd.push_vertex_uniforms(0, ptr_cast(&u), u32(sizeof(Uniforms)))
+
+        val pass = f.pass(0.09, 0.1, 0.13).unwrap()
+
+        pass.bind_pipeline(pipeline)
+        pass.draw(36)
+        pass.finish()
+    , (c, r) ->
+        val (dx, dy) = c.drag_by(r, 1, PointerButton.Primary, 2, 2)
+
+        if dx != 0 then turn.set(turn.read() + real(dx) * 0.01)
+        if dy != 0 then tilt.set(tilt.read() + real(dy) * 0.01)
+
+        val (_, wy) = c.wheel(r)
+
+        if wy != 0
+            val d = distance.read() - real(wy) * 0.02
+
+            distance.set(if d < 2.5 then 2.5 else d)
+    )
+
+    val tree: &Fn() -> &View = () ->
+        val panel = column([
+            text("A cube").font_size(20.0),
+            text("Drag to turn, wheel to zoom."),
+            button("Change colour", () -> tint.set(tint.read() + 1)),
+            spacer().flex(),
+            text("Drawn with SDL_GPU."),
+        ], 12).padding(16).frame(240, 0).background(0x1F2430u32)
+
+        row([view.flex(), panel])
+
+    val spent = signal(Totals(0, 0, 0, 0, 0, 0.0))
+    val a = app("Cube", tree, () -> 0x101218u32, 1440, 900, gpu = GPU_SHADERFORMAT_MSL, on_frame = dt ->
+        turn.set(turn.read() + dt * 0.6)
+
+        val n = spent.read()
+        val t = frame_timing()
+
+        // The first frames are window setup and shader compilation, which no later frame pays again.
+        if n.frames >= 0 && limit > 0
+            spent.set(if t.ui_ns == 0 || n.frames == 0 && dt > 0.1 then n else
+                Totals(n.frames + 1, n.ui + t.ui_ns, n.upload + t.upload_ns, n.gpu + t.gpu_ns,
+                       n.present + t.present_ns, n.seconds + dt))
+
+        if limit > 0 && spent.read().frames == limit - 1 && shot != "" then save_frame(shot)
+        if limit > 0 && spent.read().frames >= limit then stop()
+    )
+
+    run(a)?
+
+    val n = spent.read()
+
+    if n.frames > 0
+        print(s"${n.frames} frames at ${view.rect().w}x${view.rect().h} viewport pixels")
+        print(s"interval ${n.seconds * 1000.0 / real(n.frames)} ms")
+        print(s"interface ${ms(n.ui, n.frames)} ms, upload ${ms(n.upload, n.frames)} ms, 3D ${ms(n.gpu, n.frames)} ms, present ${ms(n.present, n.frames)} ms")
+
+    Ok(())
+end main
