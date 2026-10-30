@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.5" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.11" }
 }
 ```
 
@@ -104,9 +104,18 @@ texture are the same call. Three things are left, and all three are handled here
 
 syslUI 0.1.5's `scroll` follows a dragged finger and the wheel, and this driver feeds it both:
 
-- **A tap lands at the release.** A button coming up calls the canvas's `release`, which taps only if
-  the press was not taken as a drag — so a finger scrolling a list of buttons presses none of them.
-  On a phone a finger *is* the mouse here, since SDL synthesises mouse events from touch.
+- **A tap lands at the release.** The left button coming up calls the canvas's `release`, which taps
+  only if the press was not taken as a drag — so a finger scrolling a list of buttons presses none of
+  them. On a phone a finger *is* the mouse here, since SDL synthesises mouse events from touch.
+- **Only the left button reaches a control.** The right and middle buttons reach a view that asks for
+  them through `Canvas.held`, `grab_by` and `drag_by` (syslUI's README has them), and a side button
+  reaches nothing. `mouse_down` and `mouse_up` are the mapping, and the tests send them events through
+  a recorder.
+- **`Canvas.modifiers` is SDL's modifier state, read once a frame**, so a key pressed or let go during
+  a drag shows in the next frame. Either side of the keyboard counts; Command or the Windows key is
+  `cmd`; Caps Lock and Num Lock are not modifiers. `modifiers_of` is the conversion.
+- **A trackpad's scroll cannot be told from a wheel's, because SDL does not say**: its wheel event
+  carries amounts and a direction and no kind of device. Both are `Canvas.wheel`.
 - **`SDL_EVENT_MOUSE_WHEEL` becomes points**: one notch is 40, and a trackpad's fractional deltas pass
   through as fractions, which the canvas adds up so a slow glide still moves. `wheel_points` is the
   conversion, and the tests reach it as a function.

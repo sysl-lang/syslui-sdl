@@ -1,0 +1,38 @@
+module sh.sysl.ui_sdl
+
+import sh.sysl.ui.{Modifiers, PointerButton, Pointing}
+import sh.sysl.sdl3.{MouseButton, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI}
+
+// What a mouse event means to a canvas, apart from the loop so a test can send it one without a window.
+
+// The toolkit's name for an SDL button. The side buttons and anything past them are nobody's.
+button_of(b: MouseButton) -> Option[PointerButton] =
+    b match
+        Left -> Some(PointerButton.Primary)
+        Right -> Some(PointerButton.Secondary)
+        Middle -> Some(PointerButton.Middle)
+        _ -> None
+
+// The keys that matter of SDL's modifier mask, either side of the keyboard alike.
+modifiers_of(mods: u16) -> Modifiers =
+    Modifiers((mods & KMOD_SHIFT) != 0, (mods & KMOD_CTRL) != 0, (mods & KMOD_ALT) != 0,
+              (mods & KMOD_GUI) != 0)
+
+// A button went down at `(x, y)`.
+//
+// **The pointer is put where the press was at once**, so a control reading the pointer during the
+// paint that follows sees the press where it happened rather than where the mouse last moved.
+mouse_down[C: Pointing](c: *C, b: MouseButton, x: int, y: int)
+    button_of(b) match
+        Some(named) -> c.press(x, y, named)
+        None -> ()
+
+// A button came up at `(x, y)`.
+//
+// **The tap is the primary's release**, because only then is it known that the press was not the start
+// of a drag: a finger scrolling a list of buttons must not press the one it landed on. The canvas
+// decides; see `PlutoCanvas.release`.
+mouse_up[C: Pointing](c: *C, b: MouseButton, x: int, y: int)
+    button_of(b) match
+        Some(named) -> c.let_go(x, y, named)
+        None -> ()

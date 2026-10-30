@@ -7,7 +7,7 @@
 // one, and it is why `sh.sysl.ui` names nothing but `sysl.*` and PlutoVG.
 //
 //     dependencies {
-//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.10" }
+//       syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.11" }
 //     }
 //
 // A program naming this one gets syslUI with it, so it names only this.
@@ -20,7 +20,7 @@
 // 0.1.1 that called `set_insets` deletes that call and its JNI export together.
 package {
   name    = "syslui-sdl"
-  version = "0.2.10"
+  version = "0.2.11"
   sysl   = "0.8.0"
 }
 
@@ -28,7 +28,7 @@ package {
 // driver takes from it is the system bars and the orientation pair. A desktop program does not take
 // the package at all, so its JNI exports are not in the binary.
 dependencies {
-  syslui  { git = "github.com/sysl-lang/syslui",  version = "0.1.10" }
+  syslui  { git = "github.com/sysl-lang/syslui",  version = "0.1.11" }
   skitter { git = "github.com/sysl-lang/skitter", version = "0.3.5", if = "android" }
   sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.12" }
   plutovg { git = "github.com/sysl-lang/plutovg", version = "0.2.6" }

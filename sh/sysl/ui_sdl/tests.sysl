@@ -1,8 +1,10 @@
 module sh.sysl.ui_sdl
 @tests
 
-import sh.sysl.ui.{Key, Press, Rect, signal, text, writes}
-import sh.sysl.sdl3.{EventKind, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, SCANCODE_BACKSPACE, SCANCODE_LEFT,
+import sh.sysl.ui.{Canvas, Key, Modifiers, PointerButton, Press, Rect, no_modifiers, recorder, signal, text,
+                   writes}
+import sh.sysl.sdl3.{EventKind, MouseButton, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, KMOD_LSHIFT, KMOD_RCTRL,
+                     KMOD_CAPS, KMOD_NUM, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE}
 #if android
 import sh.sysl.skitter.{Insets, insets, set_system_bars}
@@ -303,6 +305,94 @@ private a_precise_delta_is_not_rounded_to_a_step()
     assert(y == 5.0, s"${y}")
     assert(x > 1.99 && x < 2.01, s"${x}")
 end a_precise_delta_is_not_rounded_to_a_step
+
+// ## The mouse
+
+private val screen = Rect(0, 0, 100, 100)
+
+// **A right or middle click does not tap a control**, and neither does a side button, which the
+// toolkit has no name for. The left one does, and it is the only one that does.
+@test
+private only_the_left_button_taps_a_control()
+    val n = signal(0)
+    val bump: &Fn() -> unit = () -> n.set(n.read() + 1)
+    val tree = text("button").on_tap(bump)
+
+    for b in [MouseButton.Right, MouseButton.Middle, MouseButton.X1, MouseButton.X2, MouseButton.Other(9)]
+        var c = recorder()
+
+        tree.paint(&c, screen)
+        mouse_down(&c, b, 5, 5)
+        assert(!c.pressed(screen), "it presses nothing")
+        mouse_up(&c, b, 5, 5)
+        assert_eq(n.read(), 0)
+
+    var c = recorder()
+
+    tree.paint(&c, screen)
+    mouse_down(&c, MouseButton.Left, 5, 5)
+    assert(c.pressed(screen), "the left one presses")
+    mouse_up(&c, MouseButton.Left, 5, 5)
+    assert_eq(n.read(), 1)
+end only_the_left_button_taps_a_control
+
+@test
+private a_button_tells_the_canvas_which_it_was()
+    var c = recorder()
+
+    mouse_down(&c, MouseButton.Right, 20, 30)
+    assert(c.held(PointerButton.Secondary))
+    assert(!c.held(PointerButton.Primary))
+    assert_eq(c.pointer(), (20, 30))
+    assert_eq(c.press_origin_by(PointerButton.Secondary), (20, 30))
+
+    mouse_down(&c, MouseButton.Middle, 21, 31)
+    assert(c.held(PointerButton.Middle))
+
+    mouse_up(&c, MouseButton.Right, 22, 32)
+    assert(!c.held(PointerButton.Secondary))
+    assert(c.held(PointerButton.Middle), "the other stays down")
+    assert_eq(c.pointer(), (22, 32))
+
+    mouse_up(&c, MouseButton.Middle, 22, 32)
+    assert(!c.held(PointerButton.Middle))
+end a_button_tells_the_canvas_which_it_was
+
+// **A side button in the middle of a right-drag says nothing about it**: not a release, not a press.
+@test
+private a_side_button_changes_nothing_that_is_held()
+    var c = recorder()
+
+    mouse_down(&c, MouseButton.Right, 20, 30)
+    mouse_down(&c, MouseButton.X1, 20, 30)
+    mouse_up(&c, MouseButton.X1, 20, 30)
+    assert(c.held(PointerButton.Secondary))
+    assert(!c.held(PointerButton.Primary))
+    assert(!c.held(PointerButton.Middle))
+end a_side_button_changes_nothing_that_is_held
+
+@test
+private the_three_buttons_have_names_and_the_rest_do_not()
+    assert(button_of(MouseButton.Left) == Some(PointerButton.Primary))
+    assert(button_of(MouseButton.Right) == Some(PointerButton.Secondary))
+    assert(button_of(MouseButton.Middle) == Some(PointerButton.Middle))
+    assert(button_of(MouseButton.X1) == None)
+    assert(button_of(MouseButton.X2) == None)
+    assert(button_of(MouseButton.Other(9)) == None)
+end the_three_buttons_have_names_and_the_rest_do_not
+
+// **Either side of the keyboard counts, and a lock key is not a modifier.**
+@test
+private the_modifier_mask_becomes_four_answers()
+    assert(modifiers_of(0) == no_modifiers())
+    assert(modifiers_of(KMOD_SHIFT) == Modifiers(true, false, false, false))
+    assert(modifiers_of(KMOD_LSHIFT) == Modifiers(true, false, false, false))
+    assert(modifiers_of(KMOD_RCTRL) == Modifiers(false, true, false, false))
+    assert(modifiers_of(KMOD_ALT) == Modifiers(false, false, true, false))
+    assert(modifiers_of(KMOD_GUI) == Modifiers(false, false, false, true))
+    assert(modifiers_of(KMOD_SHIFT | KMOD_CTRL | KMOD_ALT | KMOD_GUI) == Modifiers(true, true, true, true))
+    assert(modifiers_of(KMOD_CAPS | KMOD_NUM) == no_modifiers())
+end the_modifier_mask_becomes_four_answers
 
 // ## The font
 
