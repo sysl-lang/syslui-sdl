@@ -3,4 +3,5 @@ github.com/sysl-lang/plutovg v0.2.6 sha256:daef22f6d3f1cf301052abc013ffa5634f2b9
 github.com/sysl-lang/sdl3 v0.3.12 sha256:9c8d6c353b186bcd16e37d6e6a9c381d7fc78f1e6bc1bcdde9b4d95f63bd60e1
 github.com/sysl-lang/skitter v0.3.4 sha256:96ef1b599e561f42f61867740a0048349b05706bee0d53a2ecc3a2de5cc9f192
 github.com/sysl-lang/syslui v0.1.10 sha256:d8d2248f260b320c95cbff6dc11dab4c606de837710448567d45d5be28e35666
+github.com/sysl-lang/syslui v0.1.11 sha256:3852a0dd1f31df46f6c1d496433c80cfc9629d0f87b11d900c5acc51bc43335f
 github.com/sysl-lang/toml v0.1.4 sha256:459fd45c4d0a721e67b2ecca417732f1a726bf38705d331e8d452fe4370a3683
