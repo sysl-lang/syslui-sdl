@@ -10,7 +10,7 @@ package {
 }
 
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.12" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.13" }
 }
 
 requires {
