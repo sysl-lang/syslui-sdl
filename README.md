@@ -238,6 +238,14 @@ curl --unix-socket $S http://app/shot -o shot.png
   with its role, label, name, value, rectangle, state and the point a click should land on. `.named("x")`
   gives a control a `ref` that holds across rebuilds. It is 503 before the first frame and 405 for any
   method but `GET`.
+- **`POST /click?ref=<key>`** (since 0.2.16) clicks the control the snapshot calls `key`: its name, or
+  the `@n` reference. The middle of what shows of it is converted to the window coordinate `/click`
+  takes, and the request goes on to sdl3's own `/click`, so the pointer glides, presses and the answer
+  comes when the release is done; `button` and `clicks` are passed on. An unknown key is 404 naming it,
+  a key that names two controls or one under something raised above it is 409 with the reason, and
+  before the first frame it is 503. A `/click` with `x` and `y` and no `ref` is untouched.
+  `curl --unix-socket $S -X POST 'http://app/click?ref=colour'`. There is no `/type?ref=`: sdl3 can
+  forward one request and `/type` types where the focus is, so click by `ref`, then `POST /type`.
 - **Everything else is `sh.sysl.sdl3.control`'s** — `/click`, `/drag`, `/key`, `/type`, `/wait`, `/state`
   and `/shot`; its README has the table. Its input goes in through SDL's own event queue at a pace a person
   can follow, so the application cannot tell it from a mouse and keyboard.
@@ -249,8 +257,9 @@ curl --unix-socket $S http://app/shot -o shot.png
   paint pass through a canvas that draws nothing. An application without a socket never takes one.
 - **Coordinates.** `/click` and `/drag` take window coordinates, which is what SDL's mouse events carry;
   a snapshot is in the interface's points. They agree when the window asked for the display's density (an
-  application with a `gpu`) or when the display scale is 1. Where they do not, multiply a snapshot's point
-  by the display scale to get the window coordinate.
+  application with a `gpu`) or when the display scale is 1. Where they do not, divide a snapshot's point
+  by the ratio the loop turns the pointer into points with (the display scale, when a window is in pixels).
+  `/click?ref=` does this for you.
 - **The socket's path must be short**: a Unix socket's address holds about a hundred bytes, so a path deep
   in a temporary directory is refused at `listen` with "too long for a socket's address".
 

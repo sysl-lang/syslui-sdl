@@ -10,7 +10,7 @@ import sh.sysl.ui.*
 import sh.sysl.sdl3.{HINT_VIDEO_DRIVER, INIT_VIDEO, MouseButton, PixelFormat, Renderer, Surface, WINDOW_HIDDEN, Window, create_window,
                      init, rgb, set_hint, ticks_ns}
 import sh.sysl.sdl3.c
-import sh.sysl.sdl3.control.{Header, Pointer, Request, listen}
+import sh.sysl.sdl3.control.{Forward, Header, Pass, Pointer, Request, Respond, Routed, listen}
 import sh.sysl.png
 import sysl.buf.{Buf, buf}
 import sysl.encoding.json
@@ -36,7 +36,7 @@ private save_button(n: &Signal[int]) -> &View =
 
 @test
 private the_snapshot_route_leaves_every_other_path_to_sdl3()
-    val s: &Shown = Shown(None)
+    val s: &Shown = Shown(None, 1.0)
 
     assert(answer(s, request_of("GET", "/state")).is_none())
     assert(answer(s, request_of("POST", "/click")).is_none())
@@ -45,7 +45,7 @@ end the_snapshot_route_leaves_every_other_path_to_sdl3
 
 @test
 private the_snapshot_route_takes_only_get()
-    val s: &Shown = Shown(None)
+    val s: &Shown = Shown(None, 1.0)
     val r = answer(s, request_of("POST", "/snapshot")).unwrap()
 
     assert_eq(r.status, 405)
@@ -54,7 +54,7 @@ end the_snapshot_route_takes_only_get
 
 @test
 private before_the_first_frame_there_is_nothing_to_snapshot()
-    val r = answer(Shown(None), request_of("GET", "/snapshot")).unwrap()
+    val r = answer(Shown(None, 1.0), request_of("GET", "/snapshot")).unwrap()
 
     assert_eq(r.status, 503)
     assert(body_of(r).contains("no frame"), body_of(r))
@@ -68,7 +68,7 @@ private the_snapshot_route_answers_the_frame_as_json()
 
     render(tree, &c, screen)
 
-    val s: &Shown = Shown(Some(snapshot(tree, &c, screen)))
+    val s: &Shown = Shown(Some(snapshot(tree, &c, screen)), 1.0)
     val r = answer(s, request_of("GET", "/snapshot")).unwrap()
 
     assert_eq(r.status, 200)
@@ -354,6 +354,186 @@ private a_running_application_is_driven_over_its_socket()
     assert(!exists(at), "the socket goes when run returns")
     remove_dir_all(dir).unwrap()
 end a_running_application_is_driven_over_its_socket
+
+// ## A click named by reference
+
+private click_request(query: string, method: string = "POST") -> Request =
+    Request(method, "/click", query, buf(), buf())
+
+private shown_of(v: &View, scale: real) -> &Shown
+    var c = recorder()
+
+    render(v, &c, screen)
+    Shown(Some(snapshot(v, &c, screen)), scale)
+end shown_of
+
+private forwarded(r: Routed) -> Request
+    r match
+        Forward(req) -> req
+        _ -> panic("expected a forwarded request")
+end forwarded
+
+private refused(r: Routed) -> sh.sysl.sdl3.control.Response
+    r match
+        Respond(resp) -> resp
+        _ -> panic("expected an answer")
+end refused
+
+@test
+private a_click_by_reference_is_forwarded_to_sdl3_at_the_controls_window_coordinate()
+    val s = shown_of(save_button(signal(0)), 1.0)
+    val req = forwarded(click_route(s, click_request("ref=save")))
+
+    assert_eq(req.method, "POST")
+    assert_eq(req.path, "/click")
+    assert_eq(req.param("x"), Some("100.5"), "the middle of the button, as a window coordinate")
+    assert_eq(req.param("y"), Some("16.5"))
+end a_click_by_reference_is_forwarded_to_sdl3_at_the_controls_window_coordinate
+
+@test
+private on_a_dense_display_the_window_coordinate_is_the_point_divided_by_the_scale()
+    val s = shown_of(save_button(signal(0)), 2.0)
+    val req = forwarded(click_route(s, click_request("ref=save")))
+
+    // The loop turns a window coordinate into a point by multiplying by the same scale, and
+    // truncating: the point the snapshot named has to come back out.
+    assert_eq(req.param("x"), Some("50.25"))
+    assert_eq(req.param("y"), Some("8.25"))
+    assert_eq(int(50.25 * 2.0), 100)
+    assert_eq(int(8.25 * 2.0), 16)
+end on_a_dense_display_the_window_coordinate_is_the_point_divided_by_the_scale
+
+@test
+private the_other_parameters_of_a_click_by_reference_go_on_to_sdl3()
+    val s = shown_of(save_button(signal(0)), 1.0)
+    val req = forwarded(click_route(s, click_request("ref=save&clicks=2&button=right")))
+
+    assert_eq(req.param("clicks"), Some("2"))
+    assert_eq(req.param("button"), Some("right"))
+    assert_eq(req.param("x"), Some("100.5"))
+end the_other_parameters_of_a_click_by_reference_go_on_to_sdl3
+
+@test
+private an_unknown_reference_is_404_and_names_it()
+    val r = refused(click_route(shown_of(save_button(signal(0)), 1.0), click_request("ref=nowhere")))
+
+    assert_eq(r.status, 404)
+    assert(body_of(r).contains("nowhere"), body_of(r))
+end an_unknown_reference_is_404_and_names_it
+
+@test
+private a_covered_control_is_409_with_the_reason()
+    val v = button("back", () -> ()).named("back").modal(signal(true), button("ok", () -> ()).named("ok"))
+    val s = shown_of(v, 1.0)
+    val r = refused(click_route(s, click_request("ref=back")))
+
+    assert_eq(r.status, 409)
+    assert(body_of(r).contains("raised above"), body_of(r))
+    assert(forwarded(click_route(s, click_request("ref=ok"))).param("x").is_some(), "what is above it can be clicked")
+end a_covered_control_is_409_with_the_reason
+
+@test
+private an_ambiguous_name_is_409_and_says_so()
+    val v = column([button("one", () -> ()).named("d"), button("two", () -> ()).named("d")])
+    val r = refused(click_route(shown_of(v, 1.0), click_request("ref=d")))
+
+    assert_eq(r.status, 409)
+    assert(body_of(r).contains("names two"), body_of(r))
+end an_ambiguous_name_is_409_and_says_so
+
+@test
+private a_click_by_reference_before_the_first_frame_is_503()
+    val r = refused(click_route(Shown(None, 1.0), click_request("ref=save")))
+
+    assert_eq(r.status, 503)
+end a_click_by_reference_before_the_first_frame_is_503
+
+@test
+private a_click_with_coordinates_or_the_wrong_method_is_left_alone()
+    val s = shown_of(save_button(signal(0)), 1.0)
+
+    assert(matches_pass(click_route(s, click_request("x=10&y=10"))), "no ref")
+    assert(matches_pass(click_route(s, click_request(""))), "nothing at all")
+    assert(matches_pass(click_route(s, click_request("ref=save", "GET"))), "sdl3 answers a GET its own 405")
+    assert(matches_pass(click_route(s, Request("POST", "/key", "ref=save", buf(), buf()))), "another path")
+    assert(matches_pass(click_route(Shown(None, 1.0), click_request("x=10&y=10"))), "even before a frame")
+end a_click_with_coordinates_or_the_wrong_method_is_left_alone
+
+private matches_pass(r: Routed) -> bool
+    r match
+        Pass -> true
+        _ -> false
+end matches_pass
+
+// The loop itself, with a click named by reference sent over the socket between frames.
+private struct Named
+    at: string
+    taps: &Signal[int]
+    targets: Buf[string]
+    next: usize
+    client: Option[&Client]
+    statuses: Buf[int]
+    taps_at: Buf[int]
+    frames: int
+    started: u64
+
+private drive_named(s: &Named)
+    s.frames += 1
+
+    if s.frames == 1 then s.started = ticks_ns()
+    if ticks_ns() - s.started > 10000000000u64 then stop()
+
+    s.client match
+        Some(cl) ->
+            drain(cl)
+
+            if !cl.over then return
+
+            s.statuses.push(status_of(cl))
+            s.taps_at.push(s.taps.read())
+            s.client = None
+        None -> ()
+
+    if s.next >= s.targets.len()
+        stop()
+        return
+
+    s.client = Some(send(s.at, "POST", s.targets.at(s.next)))
+    s.next += 1
+end drive_named
+
+@test
+private a_click_by_reference_lands_in_the_named_control_in_a_running_application()
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+
+    val dir = make_temp_dir("syslui-ctl-").unwrap()
+    val at = join(dir, "app.sock")
+    val taps = signal(0)
+    val tree = save_button(taps)
+    val targets: Buf[string] = buf()
+
+    // The last click is plain coordinates, below the button, which a click by reference must not disturb.
+    for t in ["/click?ref=save", "/click?ref=nowhere", "/click?x=10&y=90", "/click?ref=save"]
+        targets.push(t)
+
+    val s: &Named = Named(at, taps, targets, 0, None, buf(), buf(), 0, 0)
+    val on_tree: &Fn() -> &View = () -> tree
+    val on_ground: &Fn() -> u32 = () -> 0x000000u32
+    val on_frame: &Fn(real) -> unit = dt -> drive_named(s)
+
+    run(app("ctl", on_tree, on_ground, width = 240, height = 160, on_frame = on_frame, control = at)).unwrap()
+
+    assert_eq(s.statuses.len(), 4)
+    assert_eq(s.statuses.at(0), 200)
+    assert_eq(s.taps_at.at(0), 1, "the named button's handler had run by the time the click was answered")
+    assert_eq(s.statuses.at(1), 404)
+    assert_eq(s.taps_at.at(1), 1)
+    assert_eq(s.statuses.at(2), 200, "plain coordinates still go straight to sdl3")
+    assert_eq(s.taps_at.at(2), 1, "and landed below the button")
+    assert_eq(s.statuses.at(3), 200)
+    assert_eq(s.taps_at.at(3), 2)
+    remove_dir_all(dir).unwrap()
+end a_click_by_reference_lands_in_the_named_control_in_a_running_application
 
 private struct Quiet
     frames: int

@@ -5,7 +5,7 @@ import sh.sysl.plutovg
 import sh.sysl.sdl3.{BlendMode, PixelFormat, Renderer, ScaleMode, Surface, GpuDevice, TextureAccess, Event, EventKind,
                      init, create_window, create_gpu_renderer, gpu_device, poll_event, ticks_ns, mod_state, error,
                      set_hint, INIT_VIDEO, WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE, Window}
-import sh.sysl.sdl3.control.{Control, Request, Response, listen}
+import sh.sysl.sdl3.control.{Control, Request, Routed, listen}
 import sysl.slices.as_ptr
 
 // Skitter is a phone framework, so only an Android build has it (the manifest's `if = "android"`),
@@ -339,15 +339,15 @@ run(a: &App) -> Result[unit, string]
     // **The socket is opened only when one was named**, so an application without it listens on
     // nothing. The route is held in a local for the whole run rather than written inline, so the
     // closure the control keeps outlives every call it answers.
-    val shown: &Shown = Shown(None)
-    val route: &Fn(Request) -> Option[Response] = req -> answer(shown, req)
+    val shown: &Shown = Shown(None, 1.0)
+    val route: &Fn(Request) -> Routed = req -> route_of(shown, req)
     val control: Option[&Control] = if a.control == "" then None else
         listen(a.control, Some(window)) match
             Ok(ctl) -> Some(ctl)
             Err(e) -> return Err(s"the control socket: ${e}")
 
     control match
-        Some(ctl) -> ctl.route(route)
+        Some(ctl) -> ctl.handle(route)
         None -> ()
 
     live = Some(window)
@@ -389,6 +389,8 @@ run(a: &App) -> Result[unit, string]
                 None -> ()
 
         val to_point = point_scale(int(ww), int(pw), k)
+
+        shown.to_point = to_point
 
         // Before the events, so what a command pushed this frame is drained with them.
         control match
