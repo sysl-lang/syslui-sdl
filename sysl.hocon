@@ -30,7 +30,7 @@ package {
 dependencies {
   syslui  { git = "github.com/sysl-lang/syslui",  version = "0.1.16" }
   skitter { git = "github.com/sysl-lang/skitter", version = "0.3.5", if = "android" }
-  sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.22" }
+  sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.23" }
   plutovg { git = "github.com/sysl-lang/plutovg", version = "0.2.6" }
 }
 
