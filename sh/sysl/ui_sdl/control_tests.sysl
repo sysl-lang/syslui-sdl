@@ -1,0 +1,402 @@
+module sh.sysl.ui_sdl
+@tests
+
+// Driving a running application over its socket. The routes and the pointer marker are tested on their
+// own, and then `run` itself, on SDL's dummy video driver, with the test as the client: `on_frame` is
+// where it sends, and a frame goes by between each look at the socket, exactly as a `curl` in another
+// process would see it.
+
+import sh.sysl.ui.*
+import sh.sysl.sdl3.{HINT_VIDEO_DRIVER, INIT_VIDEO, MouseButton, PixelFormat, Renderer, Surface, WINDOW_HIDDEN, Window, create_window,
+                     init, rgb, set_hint, ticks_ns}
+import sh.sysl.sdl3.c
+import sh.sysl.sdl3.control.{Header, Pointer, Request, listen}
+import sh.sysl.png
+import sysl.buf.{Buf, buf}
+import sysl.encoding.json
+import sysl.fs.{exists, make_temp_dir, remove_dir_all}
+import sysl.net.{Socket, unix, unix_connect, would_block}
+import sysl.path.join
+import sysl.text.{Search, from_cstring, from_utf8_lossy}
+
+// sdl3 binds `set_title` and nothing that reads the title back, so the check asks SDL directly.
+extern "SDL_GetWindowTitle" window_title(w: *c.Window) -> *u8
+
+private request_of(method: string, path: string) -> Request =
+    Request(method, path, "", buf(), buf())
+
+private body_of(r: sh.sysl.sdl3.control.Response) -> string = from_utf8_lossy(r.body.view())
+
+private val screen = Rect(0, 0, 200, 100)
+
+private save_button(n: &Signal[int]) -> &View =
+    column([button("Save", () -> n.set(n.read() + 1)).named("save"), text("ready")])
+
+// ## The route
+
+@test
+private the_snapshot_route_leaves_every_other_path_to_sdl3()
+    val s: &Shown = Shown(None)
+
+    assert(answer(s, request_of("GET", "/state")).is_none())
+    assert(answer(s, request_of("POST", "/click")).is_none())
+    assert(answer(s, request_of("GET", "/snapshots")).is_none())
+end the_snapshot_route_leaves_every_other_path_to_sdl3
+
+@test
+private the_snapshot_route_takes_only_get()
+    val s: &Shown = Shown(None)
+    val r = answer(s, request_of("POST", "/snapshot")).unwrap()
+
+    assert_eq(r.status, 405)
+    assert_eq(r.allow, "GET")
+end the_snapshot_route_takes_only_get
+
+@test
+private before_the_first_frame_there_is_nothing_to_snapshot()
+    val r = answer(Shown(None), request_of("GET", "/snapshot")).unwrap()
+
+    assert_eq(r.status, 503)
+    assert(body_of(r).contains("no frame"), body_of(r))
+end before_the_first_frame_there_is_nothing_to_snapshot
+
+@test
+private the_snapshot_route_answers_the_frame_as_json()
+    val n = signal(0)
+    val tree = save_button(n)
+    var c = recorder()
+
+    render(tree, &c, screen)
+
+    val s: &Shown = Shown(Some(snapshot(tree, &c, screen)))
+    val r = answer(s, request_of("GET", "/snapshot")).unwrap()
+
+    assert_eq(r.status, 200)
+    assert_eq(r.content_type, "application/json")
+
+    val parsed = json.parse(body_of(r)).unwrap()
+    val entries = parsed.get("entries").unwrap()
+    var found = false
+
+    for i in 0..<entries.len()
+        val e = entries.at(i).unwrap()
+
+        if e.get("ref").unwrap().as_str() == Some("save")
+            found = true
+            assert_eq(e.get("role").unwrap().as_str(), Some("button"))
+            assert_eq(e.get("label").unwrap().as_str(), Some("Save"))
+
+    assert(found, body_of(r))
+    assert_eq(body_of(r), snapshot(tree, &c, screen).to_json() + "\n", "exactly syslUI's own JSON")
+end the_snapshot_route_answers_the_frame_as_json
+
+// ## The pointer drawn over the frame
+
+// The pixel at `x`, `y` of a frame read back, as red, green and blue: ARGB32 is B, G, R, A in memory.
+private pixel(s: &Surface, x: int, y: int) -> (u8, u8, u8)
+    val from = s.pixels()
+    val at = y * int(s.pitch()) + x * 4
+
+    (from[at + 2], from[at + 1], from[at])
+end pixel
+
+private read_back(r: &Renderer) -> &Surface = r.read_pixels().unwrap().convert(PixelFormat.Argb8888).unwrap()
+
+// A hidden window's renderer, cleared to black. The window is handed back too, since the renderer
+// draws into nothing once its window has gone.
+private headless() -> (&Window, &Renderer)
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+    assert(init(INIT_VIDEO), "SDL came up headless")
+
+    val window = create_window("marks", 64, 64, WINDOW_HIDDEN).unwrap()
+    val r = window.create_renderer().unwrap()
+
+    r.clear_to(rgb(0, 0, 0))
+    (window, r)
+end headless
+
+// Not `BLACK` and `WHITE`: syslUI's colours of those names, reached through `sh.sysl.ui.*`, are taken
+// over this module's own by sysl 0.8.9.
+private val MAGENTA: (u8, u8, u8) = (230, 40, 140)
+private val CLEARED: (u8, u8, u8) = (0, 0, 0)
+private val RING: (u8, u8, u8) = (255, 255, 255)
+
+@test
+private the_pointer_is_a_ringed_dot_where_it_is()
+    val (w, r) = headless()
+
+    mark_pointer(r, Pointer(20.0, 30.0, false, MouseButton.Left, true), 1.0)
+
+    val p = read_back(r)
+
+    assert_eq(pixel(p, 20, 30), MAGENTA, "the dot")
+    assert_eq(pixel(p, 26, 30), RING, "its ring")
+    assert_eq(pixel(p, 20, 40), CLEARED, "nothing beyond it")
+    assert_eq(pixel(p, 7, 30), CLEARED, "and no press square while nothing is held")
+end the_pointer_is_a_ringed_dot_where_it_is
+
+@test
+private a_held_button_draws_a_square_round_the_pointer()
+    val (w, r) = headless()
+
+    mark_pointer(r, Pointer(30.0, 30.0, true, MouseButton.Left, true), 1.0)
+
+    val p = read_back(r)
+
+    assert_eq(pixel(p, 30, 30), MAGENTA, "the dot")
+    assert_eq(pixel(p, 30 - 13, 30), MAGENTA, "the square's left side")
+    assert_eq(pixel(p, 30 + 14, 30 + 5), MAGENTA, "its right side")
+    assert_eq(pixel(p, 30 - 10, 30), CLEARED, "and nothing between the dot and the square")
+end a_held_button_draws_a_square_round_the_pointer
+
+@test
+private the_marks_are_scaled_to_the_renderers_pixels()
+    val (w, r) = headless()
+
+    mark_pointer(r, Pointer(10.0, 10.0, false, MouseButton.Left, true), 2.0)
+
+    val p = read_back(r)
+
+    assert_eq(pixel(p, 20, 20), MAGENTA, "a window coordinate is two pixels")
+    assert_eq(pixel(p, 8, 8), CLEARED, "not one, where an unscaled dot would cover this")
+    assert_eq(pixel(p, 31, 20), RING, "and the ring is twice as wide")
+end the_marks_are_scaled_to_the_renderers_pixels
+
+@test
+private a_pointer_not_yet_moved_draws_nothing()
+    val (w, r) = headless()
+
+    mark_pointer(r, Pointer(20.0, 20.0, true, MouseButton.Left, false), 1.0)
+
+    val p = read_back(r)
+
+    for y in 0..<64
+        for x in 0..<64
+            assert_eq(pixel(p, x, y), CLEARED)
+end a_pointer_not_yet_moved_draws_nothing
+
+@test
+private without_a_socket_the_overlay_draws_nothing()
+    val (w, r) = headless()
+
+    overlay(None, r, 1.0)
+
+    val p = read_back(r)
+
+    for y in 0..<64
+        for x in 0..<64
+            assert_eq(pixel(p, x, y), CLEARED)
+end without_a_socket_the_overlay_draws_nothing
+
+@test
+private the_marks_leave_the_draw_colour_black_for_the_next_clear()
+    val (w, r) = headless()
+
+    mark_pointer(r, Pointer(30.0, 30.0, true, MouseButton.Left, true), 1.0)
+    r.clear()
+
+    assert_eq(pixel(read_back(r), 30, 30), CLEARED)
+end the_marks_leave_the_draw_colour_black_for_the_next_clear
+
+// ## The whole loop, driven over its socket
+
+// A client on the loop's own thread: it sends from `on_frame`, and reads what has come back each frame.
+private struct Client
+    socket: Socket
+    got: Buf[u8]
+    over: bool
+
+private send(at: string, method: string, target: string, body: string = "") -> &Client
+    var s = unix_connect(unix(at).unwrap()).unwrap()
+
+    s.non_blocking().unwrap()
+    s.send_all(f"$method $target HTTP/1.1\r\nHost: app\r\nContent-Length: ${body.len}\r\n\r\n$body".bytes).unwrap()
+    Client(s, buf(), false)
+end send
+
+private drain(cl: &Client)
+    var into: []u8 = [0; 65536]
+
+    loop
+        cl.socket.recv(into) match
+            Ok(n) ->
+                if n == 0
+                    cl.over = true
+                    _ = cl.socket.close()
+                    return
+
+                cl.got.extend(into[0..<n])
+            Err(e) ->
+                if !would_block(e) then cl.over = true
+
+                return
+end drain
+
+private status_of(cl: &Client) -> int =
+    sysl.text.parse_int(from_utf8_lossy(cl.got.view())[9..<12]).unwrap_or(0)
+
+private body_bytes(cl: &Client) -> []u8
+    val at = cl.got.view().index_of("\r\n\r\n".bytes).unwrap()
+
+    cl.got.view()[at + 4..<cl.got.len()]
+end body_bytes
+
+// What the script saw, read after `run` returns.
+private struct Script
+    at: string
+    taps: &Signal[int]
+    step: int
+    frames: int
+    started: u64
+    client: Option[&Client]
+    had_window: bool
+    titled: bool
+    title: string
+    snapshot_status: int
+    click: (int, int)
+    click_status: int
+    taps_after_click: int
+    shot_status: int
+    dot: (u8, u8, u8)
+    far: (u8, u8, u8)
+
+// The point the snapshot gives for `ref`, or (-1, -1).
+private click_of(body: string, key: string) -> (int, int)
+    val entries = json.parse(body).unwrap().get("entries").unwrap()
+
+    for i in 0..<entries.len()
+        val e = entries.at(i).unwrap()
+
+        if e.get("ref").unwrap().as_str() == Some(key)
+            val pt = e.get("click").unwrap()
+
+            return (int(pt.at(0).unwrap().as_real().unwrap()), int(pt.at(1).unwrap().as_real().unwrap()))
+
+    (-1, -1)
+end click_of
+
+// One frame of the script: send, or read what came back and send the next thing.
+private drive(s: &Script)
+    s.frames += 1
+
+    // Ten seconds of frames is a script that will never finish, and the asserts after `run` say where.
+    if s.frames == 1 then s.started = ticks_ns()
+    if ticks_ns() - s.started > 10000000000u64 then stop()
+
+    s.client match
+        Some(cl) ->
+            drain(cl)
+
+            if !cl.over then return
+
+            s.client = None
+
+            if s.step == 1
+                s.snapshot_status = status_of(cl)
+                s.click = click_of(from_utf8_lossy(body_bytes(cl)), "save")
+                s.client = Some(send(s.at, "POST", "/click", f"x=${s.click.0}&y=${s.click.1}"))
+                s.step = 2
+            elif s.step == 2
+                s.click_status = status_of(cl)
+                s.taps_after_click = s.taps.read()
+                s.client = Some(send(s.at, "GET", "/shot"))
+                s.step = 3
+            else
+                s.shot_status = status_of(cl)
+
+                val image = png.decode(body_bytes(cl)).unwrap()
+                val d = image.at(usize(s.click.0), usize(s.click.1))
+                val f = image.at(usize(s.click.0), usize(s.click.1 + 40))
+
+                s.dot = (d.r, d.g, d.b)
+                s.far = (f.r, f.g, f.b)
+                stop()
+        None ->
+            if s.step != 0 then return
+
+            s.had_window = window().is_some()
+            s.titled = set_title("driven")
+            s.title = from_cstring(window_title(window().unwrap().handle)).unwrap()
+            s.client = Some(send(s.at, "GET", "/snapshot"))
+            s.step = 1
+end drive
+
+@test
+private a_running_application_is_driven_over_its_socket()
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+
+    val dir = make_temp_dir("syslui-ctl-").unwrap()
+    val at = join(dir, "app.sock")
+    val taps = signal(0)
+    val tree = save_button(taps)
+    val s: &Script = Script(at, taps, 0, 0, 0, None, false, false, "", 0, (-1, -1), 0, 0, 0, CLEARED, CLEARED)
+    val on_tree: &Fn() -> &View = () -> tree
+    val on_ground: &Fn() -> u32 = () -> 0x000000u32
+    val on_frame: &Fn(real) -> unit = dt -> drive(s)
+
+    assert(window().is_none(), "no window before run")
+
+    run(app("ctl", on_tree, on_ground, width = 240, height = 160, on_frame = on_frame, control = at)).unwrap()
+
+    assert(s.had_window, "the window is handed out while it runs")
+    assert(s.titled, "and it takes a new title")
+    assert_eq(s.title, "driven")
+    assert_eq(s.snapshot_status, 200)
+    assert(s.click.0 > 0 && s.click.1 > 0, "the snapshot names the button and where to click it")
+    assert_eq(s.click_status, 200)
+    assert_eq(taps.read(), 1, "the click reached the button through SDL's own events")
+    assert_eq(s.taps_after_click, 1, "by the time the click was answered")
+    assert_eq(s.shot_status, 200)
+    assert_eq(s.dot, MAGENTA, "the shot shows the pointer where it clicked")
+    assert(s.far != MAGENTA, "and only there")
+    assert(window().is_none(), "no window after run")
+    assert(!set_title("gone"), "nor a title to set")
+    assert(!exists(at), "the socket goes when run returns")
+    remove_dir_all(dir).unwrap()
+end a_running_application_is_driven_over_its_socket
+
+private struct Quiet
+    frames: int
+    had_window: bool
+    listening: bool
+    probe: string
+    saved: string
+
+private quiet_frame(q: &Quiet)
+    q.frames += 1
+
+    if q.frames == 1
+        q.had_window = window().is_some()
+        q.listening = exists(q.probe)
+        save_frame(q.saved)
+    elif q.frames >= 3
+        stop()
+end quiet_frame
+
+@test
+private without_a_socket_nothing_listens_and_nothing_is_drawn()
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+
+    val dir = make_temp_dir("syslui-ctl-").unwrap()
+    val q: &Quiet = Quiet(0, false, true, join(dir, "app.sock"), join(dir, "frame.png"))
+    val n = signal(0)
+    val tree = save_button(n)
+    val on_tree: &Fn() -> &View = () -> tree
+    val on_ground: &Fn() -> u32 = () -> 0x000000u32
+    val on_frame: &Fn(real) -> unit = dt -> quiet_frame(q)
+
+    run(app("quiet", on_tree, on_ground, width = 240, height = 160, on_frame = on_frame)).unwrap()
+
+    assert(q.had_window, "the window is handed out without a socket too")
+    assert(!q.listening)
+
+    val image = png.decode(sysl.fs.read_bytes(q.saved).unwrap().view()).unwrap()
+
+    for y in 0..<image.height
+        for x in 0..<image.width
+            val p = image.at(x, y)
+
+            assert((p.r, p.g, p.b) != MAGENTA, f"no pointer mark at $x,$y")
+
+    remove_dir_all(dir).unwrap()
+end without_a_socket_nothing_listens_and_nothing_is_drawn

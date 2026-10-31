@@ -1,0 +1,76 @@
+module sh.sysl.ui_sdl
+
+import sh.sysl.ui.*
+import sh.sysl.sdl3.{Renderer, rgb}
+import sh.sysl.sdl3.control.{Pointer, Request, Response, error_response, json}
+
+// Driving a running application from outside: `app(..., control = "/tmp/app.sock")`.
+//
+// **sdl3 carries the socket and the input; this file adds what only the toolkit knows** — what is on
+// screen. `sh.sysl.sdl3.control` answers HTTP on the socket, moves a pointer a person can follow and
+// presses through SDL's own event queue, and hands back the frame; `run` polls it once a frame and lets
+// it read the frame back before presenting. What it cannot know is that there is a button called
+// `save` at a particular place, and that is `GET /snapshot`: syslUI's snapshot of the frame last
+// painted, as JSON.
+//
+// **The pointer is drawn over the frame**, because input pushed into SDL's queue moves nothing a person
+// can see — SDL's own cursor stays where the mouse left it. Somebody watching an agent work the window
+// sees a dot travel and a square close round it while it presses. Without a socket there is no pointer
+// and nothing is drawn: the frame is exactly what it was.
+
+// What the routes read: the snapshot of the frame last painted, or `None` before the first.
+//
+// **It is taken every frame while a socket is open, right after `render`**, which is where syslUI says
+// a snapshot belongs. The routes run inside `poll`, between frames, when the canvas the frame was
+// painted with is `run`'s to rebuild — so they read what was taken rather than reaching back for it. A
+// snapshot is a second paint pass through a canvas that draws nothing; an application without a socket
+// never takes one.
+private[ui_sdl] struct Shown
+    snap: Option[Snapshot]
+
+// The answer to a request, or `None` to leave it to sdl3's own routes.
+private[ui_sdl] answer(s: &Shown, req: Request) -> Option[Response]
+    if req.path != "/snapshot" then return None
+
+    if req.method != "GET"
+        var r = error_response(405, "/snapshot takes GET")
+
+        r.allow = "GET"
+        return Some(r)
+
+    s.snap match
+        Some(snap) -> Some(json(200, snap.to_json() + "\n"))
+        None -> Some(error_response(503, "no frame has been painted yet"))
+end answer
+
+// The controlled pointer's colour, a magenta nothing in a usual interface is, ringed in white so it
+// shows on a dark ground and a light one alike.
+private const MARK_R: u8 = 230
+private const MARK_G: u8 = 40
+private const MARK_B: u8 = 140
+
+// Draw the controlled pointer over the frame: a ringed dot where it is, and a square round it while a
+// button is held. `scale` is the renderer's pixels to a window coordinate, which is what `Pointer` is in.
+//
+// **Nothing at all until `seen`**, which is what keeps a window under control looking exactly as it
+// did until the first command moves the pointer.
+private[ui_sdl] mark_pointer(renderer: &Renderer, p: Pointer, scale: f32)
+    if !p.seen then return
+
+    val x = p.x * scale
+    val y = p.y * scale
+
+    renderer.fill_circle(x, y, 7.0 * scale, rgb(255, 255, 255))
+    renderer.fill_circle(x, y, 5.0 * scale, rgb(MARK_R, MARK_G, MARK_B))
+
+    if p.down
+        renderer.set_draw_color(rgb(MARK_R, MARK_G, MARK_B))
+
+        for i in 0..<3
+            val half = (13.0 + f32(i)) * scale
+
+            renderer.draw_rect(x - half, y - half, half * 2.0, half * 2.0)
+
+    // `clear` uses the draw colour, so it goes back to SDL's black.
+    renderer.set_draw_color(rgb(0, 0, 0))
+end mark_pointer

@@ -4,7 +4,8 @@ import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{BlendMode, PixelFormat, Renderer, ScaleMode, Surface, GpuDevice, TextureAccess, Event, EventKind,
                      init, create_window, create_gpu_renderer, gpu_device, poll_event, ticks_ns, mod_state, error,
-                     set_hint, INIT_VIDEO, WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE}
+                     set_hint, INIT_VIDEO, WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE, Window}
+import sh.sysl.sdl3.control.{Control, Request, Response, listen}
 import sysl.slices.as_ptr
 
 // Skitter is a phone framework, so only an Android build has it (the manifest's `if = "android"`),
@@ -105,14 +106,19 @@ struct App
     // The shader formats the application supplies, `GPU_SHADERFORMAT_MSL` and so on, which is how it
     // asks to draw with viewports. Zero means none: a plain window with no GPU device.
     gpu: u32
+
+    // A Unix socket to be driven over, `/tmp/app.sock` say, or the empty string for none — in which
+    // case nothing listens and nothing extra is drawn. See `control.sysl`.
+    control: string
 end App
 
 // An application, with the parts most of them do not need already answered.
 app(title: string, tree: &Fn() -> &View, ground: &Fn() -> u32, width: int = 900,
     height: int = 660, on_event: &Fn(Event) -> bool = e -> false, font: string = "",
     size: f32 = 15.0, on_frame: &Fn(real) -> unit = dt -> (), on_pause: &Fn() -> unit = () -> (),
-    on_resume: &Fn() -> unit = () -> (), gpu: u32 = 0) -> &App =
-    App(title, width, height, tree, ground, on_event, on_frame, on_pause, on_resume, font, size, gpu)
+    on_resume: &Fn() -> unit = () -> (), gpu: u32 = 0, control: string = "") -> &App =
+    App(title, width, height, tree, ground, on_event, on_frame, on_pause, on_resume, font, size, gpu,
+        control)
 
 // ## What an Android application has to reach
 //
@@ -138,6 +144,17 @@ var stopped: bool = false
 
 // End the frame loop. An application calls this from a button, a shortcut or a menu.
 stop() = stopped = true
+
+// The window `run` opened, while it is running — what a file dialog or a message box takes as its
+// parent. `None` before `run` has made it and after `run` has returned.
+window() -> Option[&Window] = live
+private var live: Option[&Window] = None
+
+// Retitle the running window. `false` when there is none, or SDL refused.
+set_title(title: string) -> bool =
+    live match
+        Some(w) -> w.set_title(title)
+        None -> false
 
 // The file the next finished frame is written to, or nothing.
 private var shot_to: string = ""
@@ -318,6 +335,23 @@ run(a: &App) -> Result[unit, string]
     var c = pluto_canvas(vg, face, a.size)
 
     var tree = (a.tree)()
+
+    // **The socket is opened only when one was named**, so an application without it listens on
+    // nothing. The route is held in a local for the whole run rather than written inline, so the
+    // closure the control keeps outlives every call it answers.
+    val shown: &Shown = Shown(None)
+    val route: &Fn(Request) -> Option[Response] = req -> answer(shown, req)
+    val control: Option[&Control] = if a.control == "" then None else
+        listen(a.control, Some(window)) match
+            Ok(ctl) -> Some(ctl)
+            Err(e) -> return Err(s"the control socket: ${e}")
+
+    control match
+        Some(ctl) -> ctl.route(route)
+        None -> ()
+
+    live = Some(window)
+
     var seen = writes() - 1
     var mx = NO_POINTER
     var my = NO_POINTER
@@ -355,6 +389,11 @@ run(a: &App) -> Result[unit, string]
                 None -> ()
 
         val to_point = point_scale(int(ww), int(pw), k)
+
+        // Before the events, so what a command pushed this frame is drained with them.
+        control match
+            Some(ctl) -> ctl.poll()
+            None -> ()
 
         loop
             poll_event() match
@@ -452,11 +491,19 @@ run(a: &App) -> Result[unit, string]
         // they are all zero, which is the honest answer for a program that has a whole window.
         val ins = insets()
 
-        render(tree, &c, frame_rect(int(pw), int(ph), k, ins.left, ins.top, ins.right, ins.bottom))
+        val at = frame_rect(int(pw), int(ph), k, ins.left, ins.top, ins.right, ins.bottom)
+
+        render(tree, &c, at)
+
+        if control.is_some() then shown.snap = Some(snapshot(tree, &c, at))
+
+        // A window coordinate, which is what the controlled pointer is in, to the renderer's pixels.
+        val to_pixel = if ww > 0 then f32(pw) / f32(ww) else 1.0f32
 
         stage match
             Some(s) ->
                 gpu_frame(s, tex, as_ptr(surf.data()), i32(surf.stride()), paint_began, () ->
+                    overlay(control, renderer, to_pixel)
                     take_shot(renderer)
                     renderer.present()
                 )
@@ -464,6 +511,7 @@ run(a: &App) -> Result[unit, string]
                 tex.update(as_ptr(surf.data()), i32(surf.stride()))
                 renderer.clear()
                 renderer.copy(tex)
+                overlay(control, renderer, to_pixel)
                 take_shot(renderer)
                 renderer.present()
 
@@ -475,8 +523,24 @@ run(a: &App) -> Result[unit, string]
             stage = None
         None -> ()
 
+    live = None
+
+    control match
+        Some(ctl) -> ctl.close()
+        None -> ()
+
     Ok(())
 end run
+
+// What a frame under control owes before it is presented: the pointer drawn over it, then the frame
+// read back if a client asked for it — so a `/shot` shows what the person watching sees.
+private[ui_sdl] overlay(control: Option[&Control], renderer: &Renderer, to_pixel: f32)
+    control match
+        Some(ctl) ->
+            mark_pointer(renderer, ctl.pointer(), to_pixel)
+            ctl.capture(renderer)
+        None -> ()
+end overlay
 
 // Point the stage at the canvas of the current surface, keeping the viewports it has seen. A surface's
 // canvas is replaced whenever the window changes size.
