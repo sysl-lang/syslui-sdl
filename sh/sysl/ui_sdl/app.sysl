@@ -370,6 +370,7 @@ run(a: &App) -> Result[unit, string]
     var focused = NOBODY
     var away = false
     var last = ticks_ns()
+    var pointing = shapes()
 
     while !stopped
         val (pw, ph) = window.size_in_pixels()
@@ -433,7 +434,7 @@ run(a: &App) -> Result[unit, string]
                     elif kind == EventKind.MouseButtonDown
                         mx = int(real(e.mouse_x()) * to_point)
                         my = int(real(e.mouse_y()) * to_point)
-                        mouse_down(&c, e.mouse_button(), mx, my)
+                        mouse_down(&c, e.mouse_button(), mx, my, int(e.mouse_clicks()))
                         down = c.down
                     elif kind == EventKind.MouseMotion
                         mx = int(real(e.mouse_x()) * to_point)
@@ -509,6 +510,10 @@ run(a: &App) -> Result[unit, string]
         paint_frame(tree, &c, at, control.is_some()) match
             Some(s) -> shown.snap = Some(s)
             None -> ()
+
+        // **After `render`, which settled the frame's answer**: the shape the views asked for under
+        // where the pointer was this frame, or the arrow.
+        pointing.follow(c.shape())
 
         // A window coordinate, which is what the controlled pointer is in, to the renderer's pixels.
         val to_pixel = if ww > 0 then f32(pw) / f32(ww) else 1.0f32

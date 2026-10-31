@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.15" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.20" }
 }
 ```
 
@@ -123,6 +123,28 @@ syslUI 0.1.5's `scroll` follows a dragged finger and the wheel, and this driver 
   natural scrolling, so the values are the ones the person chose; flipping them back would undo it.
 - **A Mac trackpad glides on after the fingers lift**, because the driver sets
   `SDL_MAC_SCROLL_MOMENTUM` before `init`. A dragged finger does not: there is no fling yet.
+
+## Keys, double-clicks and the pointer's shape (since 0.2.20)
+
+For syslUI 0.1.16's additions:
+
+- **The keys that are not text are all mapped**: the editing keys as before, and now Escape, Insert,
+  PageUp, PageDown and F1–F12 (`Key.F(n)`). A mapped key reaches the focused view's `keys()`; a field
+  acts only on the editing keys and hands Enter and Escape to its `on_enter`/`on_escape`. **Escape was
+  unmapped until now**, so no view in an SDL window heard it; `on_event` still sees every key first.
+- **A `Press` carries all four modifiers as the keys they are.** Alt used to arrive folded into `ctrl`
+  and Command not at all; now `shift`, `ctrl`, `alt` and `cmd` are each reported, read from the mask by
+  `modifiers_of` so a key and a click agree. The word motion the fold stood for is syslUI's
+  `Press.by_word` (ctrl or alt), so a field's arrows behave as before. **Behaviour change** for a
+  program reading `p.ctrl` from this driver: it now means Control only — read `p.by_word` for a word
+  motion, or `p.command` for a shortcut (⌘ on a Mac, Ctrl elsewhere).
+- **`tap_count()` is SDL's `clicks`.** `mouse_down` passes the primary button's count on with
+  `counted`, so the double-click time and distance are the person's own settings, a press too late or
+  too far is a 1 again, and a finger is counted the same way because its tap arrives as a mouse button.
+- **The pointer takes the shape a view asked for with `c.cursor(r, shape)`.** After each frame's
+  `render` the driver reads the canvas's `shape()` and, only when it differs from what is showing, sets
+  SDL's system cursor for it — made once per shape and kept, so crossing a column border back and forth
+  creates nothing. A window whose views ask for nothing never touches the cursor at all.
 
 ## What stays with the application
 

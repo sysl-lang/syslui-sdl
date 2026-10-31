@@ -1,23 +1,32 @@
 module sh.sysl.ui_sdl
 
 import sh.sysl.ui.{Key, Press}
-import sh.sysl.sdl3.{KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, SCANCODE_BACKSPACE, SCANCODE_DELETE,
+import sh.sysl.sdl3.{SCANCODE_BACKSPACE, SCANCODE_DELETE,
                      SCANCODE_LEFT, SCANCODE_RIGHT, SCANCODE_UP, SCANCODE_DOWN, SCANCODE_HOME,
-                     SCANCODE_END, SCANCODE_RETURN, SCANCODE_TAB}
+                     SCANCODE_END, SCANCODE_RETURN, SCANCODE_TAB, SCANCODE_ESCAPE, SCANCODE_INSERT,
+                     SCANCODE_PAGEUP, SCANCODE_PAGEDOWN, SCANCODE_F1, SCANCODE_F12}
 
 // SDL's keyboard, as syslUI's.
 //
-// **Only the keys an editing surface cares about are mapped, and the letters are not among them.**
-// Typed text arrives as a `TextInput` event, already composed by the platform, and that is the only
-// way an accent, a CJK composition, a phone's suggestion bar or a paste ever produces a character. A
-// driver that mapped letters would get two of everything on a desktop and the wrong thing everywhere
-// else.
+// **The keys that are not text are mapped, and the letters are not among them.** Typed text arrives
+// as a `TextInput` event, already composed by the platform, and that is the only way an accent, a CJK
+// composition, a phone's suggestion bar or a paste ever produces a character. A driver that mapped
+// letters would get two of everything on a desktop and the wrong thing everywhere else.
 //
-// **Everything unmapped answers `None` and stays the application's.** ⌘C is a shortcut, escape is a
-// decision about a dialog, and a field that swallowed either would be one nothing could get out of.
+// **A mapped key is delivered, not decided.** It reaches the focused view's `keys()`, and a field acts
+// only on the editing keys; Escape, Tab, the page keys and the function row are there for the
+// application, which is why they are mapped at all -- a field's `on_escape` and a grid's PageDown are
+// what they are for. Until 0.2.20 Escape was left unmapped, so no view in an SDL window ever heard one.
+//
+// **Everything else answers `None` and stays the application's**, through `on_event`.
 
-// What a scancode means to a field, if anything.
-key_of(sc: i32) -> Option[Key] =
+// What a scancode means to a view, if anything.
+//
+// **The function row is one arm because SDL numbers it in a run**, F1 to F12 consecutively; the second
+// run, from F13, is not consecutive with the first and is not mapped.
+key_of(sc: i32) -> Option[Key]
+    if sc >= SCANCODE_F1 && sc <= SCANCODE_F12 then return Some(Key.F(int(sc - SCANCODE_F1) + 1))
+
     sc match
         SCANCODE_BACKSPACE -> Some(Key.Backspace)
         SCANCODE_DELETE -> Some(Key.Delete)
@@ -29,21 +38,21 @@ key_of(sc: i32) -> Option[Key] =
         SCANCODE_END -> Some(Key.End)
         SCANCODE_RETURN -> Some(Key.Enter)
         SCANCODE_TAB -> Some(Key.Tab)
+        SCANCODE_ESCAPE -> Some(Key.Escape)
+        SCANCODE_INSERT -> Some(Key.Insert)
+        SCANCODE_PAGEUP -> Some(Key.PageUp)
+        SCANCODE_PAGEDOWN -> Some(Key.PageDown)
         _ -> None
+end key_of
 
-// Whether a modifier state means "extend the selection".
-holding_shift(mods: u16) -> bool = (mods & KMOD_SHIFT) != 0u16
-
-// And whether it means "by words".
+// A scancode and its modifiers, as a press a view can read -- or nothing, for a key that is not mapped.
 //
-// **Alt counts, because a Mac moves by word with it.** Which physical key means this is a platform
-// convention rather than a fact about editing, so the decision is made here and the toolkit is told
-// only that a word motion was asked for.
-by_word(mods: u16) -> bool = (mods & (KMOD_CTRL | KMOD_ALT)) != 0u16
+// **Each modifier is reported as the key it is**, either side of the keyboard alike. This used to fold
+// Alt into `ctrl`, because a Mac moves by word with ⌥ -- which also meant ⌥→ and ⌃→ could not be told
+// apart and Command never arrived at all. The word motion is now the toolkit's `Press.by_word`, which
+// is ctrl or alt, so an editor's arrows behave exactly as they did. The mask is read by
+// `modifiers_of`, so a key and a click agree about what was held.
+press_of(sc: i32, mods: u16) -> Option[Press]
+    val m = modifiers_of(mods)
 
-// A scancode and its modifiers, as a press a field can apply — or nothing, for a key that is not an
-// editing key at all.
-press_of(sc: i32, mods: u16) -> Option[Press] =
-    key_of(sc) match
-        Some(k) -> Some(Press(k, holding_shift(mods), by_word(mods)))
-        None -> None
+    key_of(sc).map(k -> Press(k, m.shift, m.ctrl, m.alt, m.cmd))

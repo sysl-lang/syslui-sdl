@@ -1,7 +1,9 @@
 module sh.sysl.ui_sdl
 
-import sh.sysl.ui.{Modifiers, PointerButton, Pointing}
-import sh.sysl.sdl3.{MouseButton, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI}
+import sh.sysl.ui.{Cursor, Modifiers, PointerButton, Pointing}
+import sh.sysl.sdl3
+import sh.sysl.sdl3.{MouseButton, SystemCursor, create_system_cursor, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI}
+import sysl.buf.{Buf, buf}
 
 // What a mouse event means to a canvas, apart from the loop so a test can send it one without a window.
 
@@ -18,14 +20,78 @@ modifiers_of(mods: u16) -> Modifiers =
     Modifiers((mods & KMOD_SHIFT) != 0, (mods & KMOD_CTRL) != 0, (mods & KMOD_ALT) != 0,
               (mods & KMOD_GUI) != 0)
 
-// A button went down at `(x, y)`.
+// A button went down at `(x, y)`, the `clicks`th press of a run as SDL counts them.
 //
 // **The pointer is put where the press was at once**, so a control reading the pointer during the
 // paint that follows sees the press where it happened rather than where the mouse last moved.
-mouse_down[C: Pointing](c: *C, b: MouseButton, x: int, y: int)
+//
+// **The count is SDL's**, which applies the person's double-click time and a radius, starts again at
+// 1 for a press too late or too far from the last, and gives a finger the same count because a tap is
+// synthesised as a mouse button. Only the primary's is passed on: it is the only button that taps.
+mouse_down[C: Pointing](c: *C, b: MouseButton, x: int, y: int, clicks: int = 1)
     button_of(b) match
-        Some(named) -> c.press(x, y, named)
+        Some(named) ->
+            c.press(x, y, named)
+            if named == PointerButton.Primary then c.counted(clicks)
         None -> ()
+
+// SDL's picture for the shape a view asked for. Every one of syslUI's has a system cursor of its own.
+system_cursor_of(shape: Cursor) -> SystemCursor =
+    shape match
+        Arrow -> SystemCursor.Default
+        Text -> SystemCursor.Text
+        Pointer -> SystemCursor.Pointer
+        EwResize -> SystemCursor.EwResize
+        NsResize -> SystemCursor.NsResize
+        Move -> SystemCursor.Move
+        Crosshair -> SystemCursor.Crosshair
+        NotAllowed -> SystemCursor.NotAllowed
+        Wait -> SystemCursor.Wait
+
+// A system cursor this driver made, and the shape it is for.
+private[ui_sdl] struct Made
+    shape: Cursor
+    cursor: &sdl3.Cursor
+
+// The pointer shape on screen, and every system cursor made to show one.
+//
+// **SDL is told only when the shape changes**, because the canvas answers a shape every frame and
+// `SDL_SetCursor` redraws the pointer: sixty a second of the same arrow is sixty redraws of nothing.
+// **And each cursor is made once and kept**, since a column border crossed back and forth would
+// otherwise create and destroy one per crossing. There are nine at most, so a walk finds one.
+//
+// It starts at the arrow, which is what SDL shows before anything is set, so a window whose views ask
+// for nothing never calls SDL at all.
+private[ui_sdl] struct Shapes
+    made: Buf[Made]
+    shown: Cursor
+
+    // Is `shape` a change from what is on screen? Says so once, and records it as shown.
+    changed(*self, shape: Cursor) -> bool
+        if shape == self.shown then return false
+
+        self.shown = shape
+        true
+    end changed
+
+    // Show `shape`, if it is not showing already. A cursor SDL cannot make leaves the old one up.
+    follow(*self, shape: Cursor)
+        if !self.changed(shape) then return
+
+        for m in self.made.view()
+            if m.shape == shape
+                m.cursor.set()
+                return
+
+        create_system_cursor(system_cursor_of(shape)) match
+            Some(made) ->
+                made.set()
+                self.made.push(Made(shape, made))
+            None -> ()
+    end follow
+end Shapes
+
+private[ui_sdl] shapes() -> Shapes = Shapes(buf(), Cursor.Arrow)
 
 // A button came up at `(x, y)`.
 //

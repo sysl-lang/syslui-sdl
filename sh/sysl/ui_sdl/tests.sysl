@@ -1,11 +1,13 @@
 module sh.sysl.ui_sdl
 @tests
 
-import sh.sysl.ui.{Canvas, Key, Modifiers, PointerButton, Press, Rect, no_modifiers, recorder, signal, text,
-                   writes}
-import sh.sysl.sdl3.{EventKind, MouseButton, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, KMOD_LSHIFT, KMOD_RCTRL,
+import sh.sysl.ui.{Canvas, Cursor, Key, Modifiers, PointerButton, PointerReader, Press, Rect, no_modifiers,
+                   recorder, render, signal, text, writes}
+import sh.sysl.sdl3.{EventKind, MouseButton, SystemCursor, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, KMOD_LSHIFT, KMOD_RCTRL,
                      KMOD_CAPS, KMOD_NUM, SCANCODE_BACKSPACE, SCANCODE_LEFT,
-                     SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE}
+                     SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE,
+                     SCANCODE_END, SCANCODE_DELETE, SCANCODE_DOWN, SCANCODE_TAB, SCANCODE_INSERT,
+                     SCANCODE_PAGEUP, SCANCODE_PAGEDOWN, SCANCODE_F1, SCANCODE_F2, SCANCODE_F12}
 #if android
 import sh.sysl.skitter.{Insets, insets, set_system_bars}
 #endif
@@ -26,8 +28,31 @@ private the_editing_keys_are_mapped()
     assert(key_of(SCANCODE_BACKSPACE) == Some(Key.Backspace))
     assert(key_of(SCANCODE_LEFT) == Some(Key.Left))
     assert(key_of(SCANCODE_HOME) == Some(Key.Home))
+    assert(key_of(SCANCODE_END) == Some(Key.End))
+    assert(key_of(SCANCODE_DELETE) == Some(Key.Delete))
     assert(key_of(SCANCODE_RETURN) == Some(Key.Enter))
 end the_editing_keys_are_mapped
+
+// **The keys an application moves by are mapped too**: the page keys, Insert, Escape and the function
+// row -- a grid's PageDown and a field's `on_escape` reach a view through `keys()` like any other.
+@test
+private the_page_keys_escape_and_the_function_row_are_mapped()
+    assert(key_of(SCANCODE_PAGEUP) == Some(Key.PageUp))
+    assert(key_of(SCANCODE_PAGEDOWN) == Some(Key.PageDown))
+    assert(key_of(SCANCODE_INSERT) == Some(Key.Insert))
+    assert(key_of(SCANCODE_ESCAPE) == Some(Key.Escape))
+    assert(key_of(SCANCODE_TAB) == Some(Key.Tab))
+    assert(key_of(SCANCODE_F1) == Some(Key.F(1)))
+    assert(key_of(SCANCODE_F2) == Some(Key.F(2)))
+    assert(key_of(SCANCODE_F12) == Some(Key.F(12)))
+
+    // Every key of the run is its own number, and the ends of the run are where it stops.
+    for i in 0..<12
+        assert(key_of(SCANCODE_F1 + i) == Some(Key.F(int(i) + 1)), s"F${i + 1}")
+
+    assert(key_of(SCANCODE_F1 - 1) != Some(Key.F(0)), "the key before F1 is not a function key")
+    assert(key_of(SCANCODE_F12 + 1).is_none(), "nor is the key after F12, which is Print Screen")
+end the_page_keys_escape_and_the_function_row_are_mapped
 
 // **A letter is not an editing key and must not be mapped.** Typed text arrives as a `TextInput`,
 // already composed by the platform, and a driver that also mapped the letter would type everything
@@ -35,28 +60,45 @@ end the_editing_keys_are_mapped
 @test
 private a_letter_is_not_mapped()
     assert(key_of(SCANCODE_A).is_none(), "typed text is a TextInput, not a key")
-    assert(key_of(SCANCODE_ESCAPE).is_none(), "and escape is a decision, which is the program's")
+    assert(press_of(SCANCODE_A, KMOD_GUI).is_none(), "and ⌘A is the application's shortcut, by on_event")
 end a_letter_is_not_mapped
 
-@test
-private shift_extends_and_control_moves_by_words()
-    assert(holding_shift(KMOD_SHIFT))
-    assert(!holding_shift(KMOD_CTRL))
-    assert(by_word(KMOD_CTRL))
-
-    // **Alt counts as by-word because a Mac moves by word with it.** Which physical key means this
-    // is a platform convention, so it is decided here rather than in the toolkit.
-    assert(by_word(KMOD_ALT), "a Mac moves by word with alt")
-    assert(!by_word(KMOD_SHIFT))
-    assert(!by_word(KMOD_GUI), "and the command key is left for shortcuts")
-end shift_extends_and_control_moves_by_words
-
+// **Each modifier is the key it names**: alt is no longer folded into control, and command arrives.
+// The word motion they used to stand for is the toolkit's `by_word`, which still answers for both.
 @test
 private a_press_carries_its_modifiers()
-    assert(press_of(SCANCODE_LEFT, KMOD_SHIFT) == Some(Press(Key.Left, true, false)))
-    assert(press_of(SCANCODE_RIGHT, KMOD_CTRL) == Some(Press(Key.Right, false, true)))
+    assert(press_of(SCANCODE_LEFT, KMOD_SHIFT) == Some(Press(Key.Left, true, false, false, false)))
+    assert(press_of(SCANCODE_RIGHT, KMOD_CTRL) == Some(Press(Key.Right, false, true, false, false)))
+    assert(press_of(SCANCODE_RIGHT, KMOD_ALT) == Some(Press(Key.Right, false, false, true, false)),
+           "alt is alt, not control")
+    assert(press_of(SCANCODE_RIGHT, KMOD_GUI) == Some(Press(Key.Right, false, false, false, true)),
+           "command arrives")
+    assert(press_of(SCANCODE_LEFT, KMOD_LSHIFT | KMOD_RCTRL) == Some(Press(Key.Left, true, true, false, false)),
+           "either side of the keyboard")
+    assert(press_of(SCANCODE_DOWN, KMOD_SHIFT | KMOD_CTRL | KMOD_ALT | KMOD_GUI) ==
+           Some(Press(Key.Down, true, true, true, true)), "all four at once")
+    assert(press_of(SCANCODE_PAGEDOWN, KMOD_CAPS | KMOD_NUM) == Some(Press(Key.PageDown, false, false, false, false)),
+           "a lock key is not a modifier")
     assert(press_of(SCANCODE_A, KMOD_SHIFT).is_none(), "and an unmapped key stays unmapped")
 end a_press_carries_its_modifiers
+
+// **An editor's arrows are what they were before alt was told apart from control**: both still move by
+// word, and command and shift alone do not.
+@test
+private the_word_motion_survives_the_split()
+    assert(press_of(SCANCODE_LEFT, KMOD_CTRL).unwrap().by_word, "control")
+    assert(press_of(SCANCODE_LEFT, KMOD_ALT).unwrap().by_word, "a Mac moves by word with alt")
+    assert(!press_of(SCANCODE_LEFT, KMOD_GUI).unwrap().by_word, "the command key is left for shortcuts")
+    assert(!press_of(SCANCODE_LEFT, KMOD_SHIFT).unwrap().by_word)
+
+#if macos
+    assert(press_of(SCANCODE_F1, KMOD_GUI).unwrap().command, "a Mac's shortcut key is command")
+    assert(!press_of(SCANCODE_F1, KMOD_CTRL).unwrap().command)
+#else
+    assert(press_of(SCANCODE_F1, KMOD_CTRL).unwrap().command, "elsewhere it is control")
+    assert(!press_of(SCANCODE_F1, KMOD_GUI).unwrap().command)
+#endif
+end the_word_motion_survives_the_split
 
 // ## The arithmetic between a window and an interface
 
@@ -393,6 +435,85 @@ private the_three_buttons_have_names_and_the_rest_do_not()
     assert(button_of(MouseButton.X2) == None)
     assert(button_of(MouseButton.Other(9)) == None)
 end the_three_buttons_have_names_and_the_rest_do_not
+
+// **SDL's `clicks` reaches the canvas as the tap's count**, for the primary button only; a press SDL
+// counted afresh -- elsewhere, or after the double-click time -- arrives as 1 and is a single again.
+@test
+private sdl_counts_the_clicks_of_a_tap()
+    var c = recorder()
+
+    mouse_down(&c, MouseButton.Left, 5, 5, 1)
+    assert_eq(c.tap_count(), 1, "the first press of a run")
+    mouse_up(&c, MouseButton.Left, 5, 5)
+    c.keys_done()
+
+    mouse_down(&c, MouseButton.Left, 5, 5, 2)
+    assert_eq(c.tap_count(), 2, "SDL said it was the second")
+    mouse_up(&c, MouseButton.Left, 5, 5)
+    c.keys_done()
+
+    mouse_down(&c, MouseButton.Left, 60, 60, 1)
+    assert_eq(c.tap_count(), 1, "too far or too late: SDL starts again, and so does the tap")
+    mouse_up(&c, MouseButton.Left, 60, 60)
+    c.keys_done()
+
+    mouse_down(&c, MouseButton.Left, 5, 5)
+    assert_eq(c.tap_count(), 1, "a press nobody counted is a single")
+    mouse_up(&c, MouseButton.Left, 5, 5)
+    c.keys_done()
+
+    mouse_down(&c, MouseButton.Right, 5, 5, 2)
+    assert_eq(c.tap_count(), 0, "a right-click is not a tap, double or not")
+    mouse_up(&c, MouseButton.Right, 5, 5)
+
+    mouse_down(&c, MouseButton.Left, 5, 5, 3)
+    mouse_down(&c, MouseButton.Right, 5, 5, 1)
+    assert_eq(c.tap_count(), 3, "and another button's count does not overwrite the primary's")
+end sdl_counts_the_clicks_of_a_tap
+
+// Every shape a view can ask for has SDL's system cursor of the same meaning.
+@test
+private every_shape_has_its_system_cursor()
+    assert(system_cursor_of(Cursor.Arrow) == SystemCursor.Default)
+    assert(system_cursor_of(Cursor.Text) == SystemCursor.Text)
+    assert(system_cursor_of(Cursor.Pointer) == SystemCursor.Pointer)
+    assert(system_cursor_of(Cursor.EwResize) == SystemCursor.EwResize)
+    assert(system_cursor_of(Cursor.NsResize) == SystemCursor.NsResize)
+    assert(system_cursor_of(Cursor.Move) == SystemCursor.Move)
+    assert(system_cursor_of(Cursor.Crosshair) == SystemCursor.Crosshair)
+    assert(system_cursor_of(Cursor.NotAllowed) == SystemCursor.NotAllowed)
+    assert(system_cursor_of(Cursor.Wait) == SystemCursor.Wait)
+end every_shape_has_its_system_cursor
+
+// **SDL is told only on a change**: the arrow it starts with is never set, the same shape twice is
+// one set, and going back to the arrow is a change like any other.
+@test
+private the_cursor_is_set_only_when_the_shape_changes()
+    var s = shapes()
+
+    assert(!s.changed(Cursor.Arrow), "the arrow is already showing")
+    assert(s.changed(Cursor.EwResize), "a new shape")
+    assert(!s.changed(Cursor.EwResize), "the same one next frame")
+    assert(s.changed(Cursor.Text), "another")
+    assert(s.changed(Cursor.Arrow), "and back to the arrow")
+    assert(!s.changed(Cursor.Arrow))
+end the_cursor_is_set_only_when_the_shape_changes
+
+// **The canvas a frame loop reads is the one the views asked**: a request over the pointer is the
+// shape after `render`, and the arrow where nothing asked.
+@test
+private the_frame_loop_reads_the_shape_the_views_asked_for()
+    val tree = PointerReader((c, r) -> c.cursor(Rect(0, 0, 10, 100), Cursor.EwResize))
+    var c = recorder()
+
+    c.point(5, 5)
+    render(tree, &c, screen)
+    assert(c.shape() == Cursor.EwResize, "over the border")
+
+    c.point(50, 5)
+    render(tree, &c, screen)
+    assert(c.shape() == Cursor.Arrow, "beside it")
+end the_frame_loop_reads_the_shape_the_views_asked_for
 
 // **Either side of the keyboard counts, and a lock key is not a modifier.**
 @test
