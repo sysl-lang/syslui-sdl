@@ -6,11 +6,11 @@
 package {
   name    = "cube"
   version = "0.0.1"
-  sysl    = "0.8.6"
+  sysl    = "0.8.9"
 }
 
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.14" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.15" }
 }
 
 requires {

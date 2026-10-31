@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.14" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.15" }
 }
 ```
 
@@ -216,6 +216,57 @@ sysl build . --lib ../..
 
 The example's shader is Metal Shading Language, so it runs on a Mac.
 
+## Driving a running application over a socket (since 0.2.15)
+
+Any application can be driven from outside, the way a browser is through its developer tools: HTTP on a
+private Unix socket, with `curl` as the whole client. Name a socket and `run` opens it; name none and
+nothing listens.
+
+```sysl
+run(app("Editor", tree, ground, control = "/tmp/editor.sock"))
+```
+
+```sh
+S=/tmp/editor.sock
+curl --unix-socket $S http://app/snapshot
+curl --unix-socket $S http://app/click -d x=1320 -d y=95
+curl --unix-socket $S http://app/type --data-urlencode "text=hello"
+curl --unix-socket $S http://app/shot -o shot.png
+```
+
+- **`GET /snapshot`** is syslUI's snapshot of the frame last painted, as its JSON: every control on screen
+  with its role, label, name, value, rectangle, state and the point a click should land on. `.named("x")`
+  gives a control a `ref` that holds across rebuilds. It is 503 before the first frame and 405 for any
+  method but `GET`.
+- **Everything else is `sh.sysl.sdl3.control`'s** — `/click`, `/drag`, `/key`, `/type`, `/wait`, `/state`
+  and `/shot`; its README has the table. Its input goes in through SDL's own event queue at a pace a person
+  can follow, so the application cannot tell it from a mouse and keyboard.
+- **The pointer is drawn over the frame**: a magenta dot ringed in white where it is, and a square round it
+  while a button is held. Input pushed into SDL's queue moves nothing on the screen, so without this a
+  person watching would see controls react to nothing. A `/shot` shows it too. **Without a socket nothing
+  is drawn**, and a window under control looks exactly as before until the first command moves the pointer.
+- **A snapshot is taken every frame while a socket is open**, right after the frame is painted — a second
+  paint pass through a canvas that draws nothing. An application without a socket never takes one.
+- **Coordinates.** `/click` and `/drag` take window coordinates, which is what SDL's mouse events carry;
+  a snapshot is in the interface's points. They agree when the window asked for the display's density (an
+  application with a `gpu`) or when the display scale is 1. Where they do not, multiply a snapshot's point
+  by the display scale to get the window coordinate.
+- **The socket's path must be short**: a Unix socket's address holds about a hundred bytes, so a path deep
+  in a temporary directory is refused at `listen` with "too long for a socket's address".
+
+`examples/cube` takes `--control <socket>`; its button is named `colour` and retitles the window.
+
+## The window, for a dialog or a title (since 0.2.15)
+
+**`window()`** answers the window `run` opened while it runs, and `None` before and after: what sdl3's file
+dialogs and message boxes take as their parent. **`set_title(title)`** retitles it, and answers `false`
+when there is no window.
+
+```sysl
+show_message("Exported", "The file was written.", Information, window())
+_ = set_title("Editor — untitled")
+```
+
 ## Tests
 
 ```
@@ -239,6 +290,14 @@ wrong key is a field that will not take a backspace, while a frame loop needs a 
 font and a compositor — a test that mocked all three would be asserting the mock. **The loop itself
 is proved by the two applications that use it**, `syslui-demo` on a desktop and `syslui-android` on
 a phone.
+
+**The control socket's twelve** run `run` itself on SDL's dummy driver with the test as the client, sending
+from `on_frame`: `/snapshot` names the button, a `/click` at its point reaches its handler through SDL's
+events, the `/shot` that follows has the pointer's dot at that point and nowhere else, the window is handed
+out and retitled while it runs and gone after, and the socket file goes with it. Without a socket the window
+is handed out all the same and no frame has a mark. The route's refusals (405, 503) and the marks — the dot,
+the ring, the press square, their scale to pixels, nothing before the pointer has moved, and the draw colour
+left black for the next clear — are checked by exact pixels.
 
 ## Licence
 

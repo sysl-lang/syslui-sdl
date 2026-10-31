@@ -5,6 +5,10 @@
 //
 //     cube                              a window, until it is closed
 //     cube --frames 300 --shot out.png  300 frames, the last written to a PNG, and the time they took
+//     cube --control /tmp/cube.sock     a window driven over the socket as well, by `curl --unix-socket`
+//
+// The button is named `colour` and retitles the window, so a controller can find it in `/snapshot` and
+// see that its click landed.
 //
 // The shader is Metal Shading Language, so this runs on a Mac. A program for other machines supplies a
 // format for each.
@@ -104,11 +108,13 @@ private ms(ns: u64, frames: int) -> real = real(ns) / 1.0e6 / real(frames)
 main(args: []string) -> Result[unit, string]
     var limit = 0
     var shot = ""
+    var socket = ""
     var i = 1
 
     while i + 1 < args.len
         if args[i] == "--frames" then limit = parse_int(args[i + 1]).unwrap_or(0)
         if args[i] == "--shot" then shot = args[i + 1]
+        if args[i] == "--control" then socket = args[i + 1]
 
         i += 2
 
@@ -152,11 +158,16 @@ main(args: []string) -> Result[unit, string]
             distance.set(if d < 2.5 then 2.5 else d)
     )
 
+    // The window shows which colour is on in its title, which is the program's own window, handed out.
+    val recolour: &Fn() -> unit = () ->
+        tint.set(tint.read() + 1)
+        _ = set_title(s"Cube, colour ${tint.read() % int(TINTS.len) + 1}")
+
     val tree: &Fn() -> &View = () ->
         val panel = column([
             text("A cube").font_size(20.0),
             text("Drag to turn, wheel to zoom."),
-            button("Change colour", () -> tint.set(tint.read() + 1)),
+            button("Change colour", recolour).named("colour"),
             spacer().flex(),
             text("Drawn with SDL_GPU."),
         ], 12).padding(16).frame(240, 0).background(0x1F2430u32)
@@ -164,7 +175,8 @@ main(args: []string) -> Result[unit, string]
         row([view.flex(), panel])
 
     val spent = signal(Totals(0, 0, 0, 0, 0, 0.0))
-    val a = app("Cube", tree, () -> 0x101218u32, 1440, 900, gpu = GPU_SHADERFORMAT_MSL, on_frame = dt ->
+    val a = app("Cube", tree, () -> 0x101218u32, 1440, 900, gpu = GPU_SHADERFORMAT_MSL, control = socket,
+                on_frame = dt ->
         turn.set(turn.read() + dt * 0.6)
 
         val n = spent.read()
