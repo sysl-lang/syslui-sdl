@@ -580,3 +580,152 @@ private without_a_socket_nothing_listens_and_nothing_is_drawn()
 
     remove_dir_all(dir).unwrap()
 end without_a_socket_nothing_listens_and_nothing_is_drawn
+
+// ## The application's own routes
+
+// What an application adds: `GET /app/state`, and a `/snapshot` of its own only when asked for one.
+private app_routes(req: Request) -> Routed
+    if req.path == "/app/state" then return Respond(sh.sysl.sdl3.control.json(200, "{\"mine\":true}\n"))
+    if req.path == "/snapshot" && req.query == "mine" then return Respond(sh.sysl.sdl3.control.json(200, "{}\n"))
+
+    Pass
+end app_routes
+
+private plain_tree() -> &View = text("plain")
+
+private plain_ground() -> u32 = 0
+
+// An application that answers every optional part with its default.
+private plain_app() -> &App
+    val on_tree: &Fn() -> &View = () -> plain_tree()
+    val on_ground: &Fn() -> u32 = () -> plain_ground()
+
+    app("plain", on_tree, on_ground)
+end plain_app
+
+@test
+private an_application_route_answers_before_the_built_in_ones()
+    val s = shown_of(save_button(signal(0)), 1.0)
+    val own: &Fn(Request) -> Routed = req -> app_routes(req)
+    val r = refused(route_of(s, own, request_of("GET", "/app/state")))
+
+    assert_eq(r.status, 200)
+    assert_eq(body_of(r), "{\"mine\":true}\n")
+
+    val shadow = refused(route_of(s, own, Request("GET", "/snapshot", "mine", buf(), buf())))
+
+    assert_eq(body_of(shadow), "{}\n", "asked first, so it may answer a built-in path itself")
+end an_application_route_answers_before_the_built_in_ones
+
+@test
+private a_pass_from_the_application_falls_through_to_the_built_in_routes()
+    val s = shown_of(save_button(signal(0)), 1.0)
+    val own: &Fn(Request) -> Routed = req -> app_routes(req)
+    val snap = refused(route_of(s, own, request_of("GET", "/snapshot")))
+
+    assert_eq(snap.status, 200)
+    assert(body_of(snap).contains("\"save\""), "the toolkit's snapshot")
+    assert_eq(forwarded(route_of(s, own, click_request("ref=save"))).param("x"), Some("100.5"), "a click by reference")
+    assert(matches_pass(route_of(s, own, request_of("GET", "/state"))), "and sdl3's own routes after that")
+end a_pass_from_the_application_falls_through_to_the_built_in_routes
+
+@test
+private an_application_that_names_no_routes_passes_everything_on()
+    val s = shown_of(save_button(signal(0)), 1.0)
+    val none = plain_app().routes
+
+    assert(matches_pass(none(request_of("GET", "/app/state"))), "the default answers Pass")
+    assert(matches_pass(route_of(s, none, request_of("GET", "/app/state"))), "so sdl3 answers 404 itself")
+    assert_eq(refused(route_of(s, none, request_of("GET", "/snapshot"))).status, 200)
+end an_application_that_names_no_routes_passes_everything_on
+
+// ## A hidden window
+
+@test
+private the_hidden_option_is_sdls_hidden_window_and_off_by_default()
+    assert_eq(shown_flags(true), WINDOW_HIDDEN)
+    assert_eq(shown_flags(false), 0u64)
+    assert(!plain_app().hidden, "a window is shown unless asked")
+end the_hidden_option_is_sdls_hidden_window_and_off_by_default
+
+// A run that GETs each target in turn and keeps what came back.
+private struct Fetches
+    at: string
+    targets: Buf[string]
+    next: usize
+    client: Option[&Client]
+    statuses: Buf[int]
+    bodies: Buf[string]
+    middle: (u8, u8, u8)
+    frames: int
+    started: u64
+
+private fetch_frame(s: &Fetches)
+    s.frames += 1
+
+    if s.frames == 1 then s.started = ticks_ns()
+    if ticks_ns() - s.started > 10000000000u64 then stop()
+
+    s.client match
+        Some(cl) ->
+            drain(cl)
+
+            if !cl.over then return
+
+            s.statuses.push(status_of(cl))
+
+            if s.targets.at(s.next - 1) == "/shot"
+                val image = png.decode(body_bytes(cl)).unwrap()
+                val p = image.at(image.width / 2, image.height - 2)
+
+                s.middle = (p.r, p.g, p.b)
+                s.bodies.push("")
+            else
+                s.bodies.push(from_utf8_lossy(body_bytes(cl)))
+
+            s.client = None
+        None -> ()
+
+    if s.next >= s.targets.len()
+        stop()
+        return
+
+    s.client = Some(send(s.at, "GET", s.targets.at(s.next)))
+    s.next += 1
+end fetch_frame
+
+// A hidden window, driven over its socket: the application's route answers, the built-ins still do, the
+// window says it is hidden, and `/shot` reads back the frame it painted all the same.
+@test
+private a_hidden_application_answers_its_own_routes_and_its_shot()
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+
+    val dir = make_temp_dir("syslui-ctl-").unwrap()
+    val at = join(dir, "app.sock")
+    val targets: Buf[string] = buf()
+
+    for t in ["/app/state", "/snapshot", "/state", "/shot", "/nowhere"]
+        targets.push(t)
+
+    val s: &Fetches = Fetches(at, targets, 0, None, buf(), buf(), CLEARED, 0, 0)
+    val tree = save_button(signal(0))
+    val on_tree: &Fn() -> &View = () -> tree
+    val on_ground: &Fn() -> u32 = () -> 0x336699u32
+    val on_frame: &Fn(real) -> unit = dt -> fetch_frame(s)
+    val own: &Fn(Request) -> Routed = req -> app_routes(req)
+
+    run(app("hidden", on_tree, on_ground, width = 240, height = 160, on_frame = on_frame, control = at,
+            routes = own, hidden = true)).unwrap()
+
+    assert_eq(s.statuses.len(), 5)
+    assert_eq(s.statuses.at(0), 200, "the application's route")
+    assert_eq(s.bodies.at(0), "{\"mine\":true}\n")
+    assert_eq(s.statuses.at(1), 200, "the toolkit's snapshot")
+    assert(s.bodies.at(1).contains("\"save\""), s.bodies.at(1))
+    assert_eq(s.statuses.at(2), 200, "sdl3's state")
+    assert(s.bodies.at(2).contains("\"hidden\":true"), s.bodies.at(2))
+    assert_eq(s.statuses.at(3), 200, "the shot")
+    assert_eq(s.middle, (0x33u8, 0x66u8, 0x99u8), "the shot holds the painted ground")
+    assert_eq(s.statuses.at(4), 404, "an unknown path is still sdl3's 404")
+    remove_dir_all(dir).unwrap()
+end a_hidden_application_answers_its_own_routes_and_its_shot

@@ -4,8 +4,8 @@ import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{BlendMode, PixelFormat, Renderer, ScaleMode, Surface, GpuDevice, TextureAccess, Event, EventKind,
                      init, create_window, create_gpu_renderer, gpu_device, poll_event, ticks_ns, mod_state, error,
-                     set_hint, INIT_VIDEO, WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE, Window}
-import sh.sysl.sdl3.control.{Control, Request, Routed, listen}
+                     set_hint, INIT_VIDEO, WINDOW_HIDDEN, WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE, Window}
+import sh.sysl.sdl3.control.{Control, Pass, Request, Routed, listen}
 import sysl.slices.as_ptr
 
 // Skitter is a phone framework, so only an Android build has it (the manifest's `if = "android"`),
@@ -110,15 +110,26 @@ struct App
     // A Unix socket to be driven over, `/tmp/app.sock` say, or the empty string for none — in which
     // case nothing listens and nothing extra is drawn. See `control.sysl`.
     control: string
+
+    // The application's own routes on the control socket, `GET /myapp/state` say. **They are asked
+    // first**, before `/snapshot`, `/click?ref=` and sdl3's built-ins, so an answer of `Pass` is what
+    // lets a request through to those; `Respond` answers it and `Forward` hands a rewritten request on.
+    // Never asked without a `control` socket.
+    routes: &Fn(Request) -> Routed
+
+    // Whether the window is created hidden, for a run driven over `control` that should not appear on
+    // screen. It still paints every frame, and `/shot` reads it back as it would a visible one.
+    hidden: bool
 end App
 
 // An application, with the parts most of them do not need already answered.
 app(title: string, tree: &Fn() -> &View, ground: &Fn() -> u32, width: int = 900,
     height: int = 660, on_event: &Fn(Event) -> bool = e -> false, font: string = "",
     size: f32 = 15.0, on_frame: &Fn(real) -> unit = dt -> (), on_pause: &Fn() -> unit = () -> (),
-    on_resume: &Fn() -> unit = () -> (), gpu: u32 = 0, control: string = "") -> &App =
+    on_resume: &Fn() -> unit = () -> (), gpu: u32 = 0, control: string = "",
+    routes: &Fn(Request) -> Routed = req -> Pass, hidden: bool = false) -> &App =
     App(title, width, height, tree, ground, on_event, on_frame, on_pause, on_resume, font, size, gpu,
-        control)
+        control, routes, hidden)
 
 // ## What an Android application has to reach
 //
@@ -304,7 +315,7 @@ run(a: &App) -> Result[unit, string]
     // at one pixel to a point and magnified by the system. A viewport wants the real pixels.
     val density = if a.gpu != 0 then WINDOW_HIGH_PIXEL_DENSITY else 0u64
     val window = create_window(a.title, i32(a.width), i32(a.height),
-                               window_flags() | density).expect("a window")
+                               window_flags() | density | shown_flags(a.hidden)).expect("a window")
 
     // **An application with viewports has its renderer on a GPU device**, and one without never makes a
     // device. The device is declared first so it outlives the renderer, as SDL requires.
@@ -340,7 +351,7 @@ run(a: &App) -> Result[unit, string]
     // nothing. The route is held in a local for the whole run rather than written inline, so the
     // closure the control keeps outlives every call it answers.
     val shown: &Shown = Shown(None, 1.0)
-    val route: &Fn(Request) -> Routed = req -> route_of(shown, req)
+    val route: &Fn(Request) -> Routed = req -> route_of(shown, a.routes, req)
     val control: Option[&Control] = if a.control == "" then None else
         listen(a.control, Some(window)) match
             Ok(ctl) -> Some(ctl)
@@ -495,9 +506,9 @@ run(a: &App) -> Result[unit, string]
 
         val at = frame_rect(int(pw), int(ph), k, ins.left, ins.top, ins.right, ins.bottom)
 
-        render(tree, &c, at)
-
-        if control.is_some() then shown.snap = Some(snapshot(tree, &c, at))
+        paint_frame(tree, &c, at, control.is_some()) match
+            Some(s) -> shown.snap = Some(s)
+            None -> ()
 
         // A window coordinate, which is what the controlled pointer is in, to the renderer's pixels.
         val to_pixel = if ww > 0 then f32(pw) / f32(ww) else 1.0f32
@@ -533,6 +544,18 @@ run(a: &App) -> Result[unit, string]
 
     Ok(())
 end run
+
+// The flag an application's `hidden` adds to its window: SDL's hidden window, or nothing.
+private[ui_sdl] shown_flags(hidden: bool) -> u64 = if hidden then WINDOW_HIDDEN else 0
+
+// Paint one frame of `tree` at `at`, and under control take its snapshot as well. The snapshot is a
+// second pass through a canvas that draws nothing, after the frame's overlays, so nothing it reaches may
+// change the picture: `Viewport.paint` neither cuts its hole nor is placed again during it.
+private[ui_sdl] paint_frame(tree: &View, c: *Canvas, at: Rect, controlled: bool) -> Option[Snapshot]
+    render(tree, c, at)
+
+    if controlled then Some(snapshot(tree, c, at)) else None
+end paint_frame
 
 // What a frame under control owes before it is presented: the pointer drawn over it, then the frame
 // read back if a client asked for it — so a `/shot` shows what the person watching sees.

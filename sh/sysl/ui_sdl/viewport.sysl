@@ -115,7 +115,12 @@ impl View for Viewport
     // Whatever it is offered: a viewport has no size of its own, so `.flex()` or `.frame(w, h)` says it.
     measure(&self, c: *Canvas, avail: Size) -> Size = avail
 
+    // **A snapshot's survey pass is not a frame**: it paints the tree a second time after the frame's
+    // overlays, so cutting the hole then would clear a menu raised over the viewport, and placing it
+    // again would draw it twice. Nor does the input hook run, since a survey changes nothing.
     paint(&self, c: *Canvas, r: Rect)
+        if c.survey().is_some() then return
+
         self.points = r
         (self.input)(c, r)
 

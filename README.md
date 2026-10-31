@@ -254,7 +254,24 @@ curl --unix-socket $S http://app/shot -o shot.png
   person watching would see controls react to nothing. A `/shot` shows it too. **Without a socket nothing
   is drawn**, and a window under control looks exactly as before until the first command moves the pointer.
 - **A snapshot is taken every frame while a socket is open**, right after the frame is painted — a second
-  paint pass through a canvas that draws nothing. An application without a socket never takes one.
+  paint pass through a canvas that draws nothing. An application without a socket never takes one. **A
+  viewport sits that pass out** (since 0.2.17): it neither cuts its hole in the interface again, which
+  would clear a menu raised over it, nor runs its `input` hook, which would see the pointer let go and end
+  a drag every frame.
+- **The application's own routes** (since 0.2.17): `app(..., routes = req -> ...)` answers a
+  `sh.sysl.sdl3.control.Request` with a `Routed`. It is asked **first**, before `/snapshot`, `/click?ref=`
+  and sdl3's built-ins: `Respond(...)` answers, `Forward(req.rewritten(...))` hands a rewritten request
+  on, and `Pass` (the default) lets the request through to the rest. A path of syslui-sdl's own can be
+  answered by the application this way, so a route should match only what it means to.
+
+  ```sysl
+  val routes: &Fn(Request) -> Routed = req ->
+      if req.path == "/editor/state" then Respond(json(200, state_json())) else Pass
+  run(app("Editor", tree, ground, control = "/tmp/editor.sock", routes = routes))
+  ```
+- **A hidden window** (since 0.2.17): `app(..., hidden = true)` creates the window with SDL's hidden flag,
+  for a controlled run that should not appear on screen. It paints every frame as a visible one does, and
+  `/shot` reads the frame back; sdl3's `/state` says `"hidden":true`. The default is a visible window.
 - **Coordinates.** `/click` and `/drag` take window coordinates, which is what SDL's mouse events carry;
   a snapshot is in the interface's points. They agree when the window asked for the display's density (an
   application with a `gpu`) or when the display scale is 1. Where they do not, divide a snapshot's point
@@ -263,7 +280,9 @@ curl --unix-socket $S http://app/shot -o shot.png
 - **The socket's path must be short**: a Unix socket's address holds about a hundred bytes, so a path deep
   in a temporary directory is refused at `listen` with "too long for a socket's address".
 
-`examples/cube` takes `--control <socket>`; its button is named `colour` and retitles the window.
+`examples/cube` takes `--control <socket>`; its button is named `colour` and retitles the window, and its
+View menu (`menu.View`) drops down over the viewport. `--hidden` runs it with the window hidden, and
+`--still` stops the cube turning by itself, so two runs draw the same frame.
 
 ## The window, for a dialog or a title (since 0.2.15)
 
@@ -300,13 +319,17 @@ font and a compositor — a test that mocked all three would be asserting the mo
 is proved by the two applications that use it**, `syslui-demo` on a desktop and `syslui-android` on
 a phone.
 
-**The control socket's twelve** run `run` itself on SDL's dummy driver with the test as the client, sending
+**The control socket's tests** run `run` itself on SDL's dummy driver with the test as the client, sending
 from `on_frame`: `/snapshot` names the button, a `/click` at its point reaches its handler through SDL's
 events, the `/shot` that follows has the pointer's dot at that point and nowhere else, the window is handed
 out and retitled while it runs and gone after, and the socket file goes with it. Without a socket the window
 is handed out all the same and no frame has a mark. The route's refusals (405, 503) and the marks — the dot,
 the ring, the press square, their scale to pixels, nothing before the pointer has moved, and the draw colour
-left black for the next clear — are checked by exact pixels.
+left black for the next clear — are checked by exact pixels. An application's own route answers ahead of
+the built-ins and its `Pass` falls through to them, and a hidden window, driven over its socket, answers its
+route, `/snapshot`, `/state` (hidden) and a `/shot` holding the painted ground. On the viewport side, a menu
+raised over a viewport keeps its pixels with control on and off and the viewport is placed once, and the
+snapshot pass never runs a viewport's `input`, so a press held across it is still held on the next frame.
 
 ## Licence
 

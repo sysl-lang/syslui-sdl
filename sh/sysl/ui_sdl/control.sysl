@@ -77,8 +77,13 @@ private[ui_sdl] click_route(s: &Shown, req: Request) -> Routed
         Err(miss) -> Respond(error_response(if miss.kind == MissKind.Unknown then 404 else 409, miss.message))
 end click_route
 
-// Every route this layer adds, in the order they are asked.
-private[ui_sdl] route_of(s: &Shown, req: Request) -> Routed
+// Every route this layer adds, in the order they are asked: the application's own first, then
+// `/snapshot`, then `/click?ref=`. A `Pass` from all of them leaves the request to sdl3's built-ins.
+private[ui_sdl] route_of(s: &Shown, own: &Fn(Request) -> Routed, req: Request) -> Routed
+    own(req) match
+        Pass -> ()
+        routed -> return routed
+
     answer(s, req) match
         Some(r) -> Respond(r)
         None -> click_route(s, req)

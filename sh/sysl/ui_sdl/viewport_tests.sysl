@@ -220,14 +220,17 @@ end rig
 
 // What `run` does in a frame, from the paint to the composite, with `after` drawing straight on the
 // surface once the tree has. Answers the composited pixels as ARGB.
-private frame_of(r: &Rig, tree: &View, after: &Fn(&plutovg.Canvas) -> unit = vg -> ()) -> &Surface
+private frame_of(r: &Rig, tree: &View, after: &Fn(&plutovg.Canvas) -> unit = vg -> (),
+                 controlled: bool = false) -> &Surface
     var c = pluto_canvas(r.vg, r.face, 15.0)
 
-    frame_on(r, &c, tree, after)
+    frame_on(r, &c, tree, after, controlled)
 end frame_of
 
-// The same on a canvas the caller keeps, so a press in one frame lands in the next.
-private frame_on(r: &Rig, c: *PlutoCanvas, tree: &View, after: &Fn(&plutovg.Canvas) -> unit = vg -> ()) -> &Surface
+// The same on a canvas the caller keeps, so a press in one frame lands in the next. `controlled` takes the
+// snapshot `run` takes when a control socket is open.
+private frame_on(r: &Rig, c: *PlutoCanvas, tree: &View, after: &Fn(&plutovg.Canvas) -> unit = vg -> (),
+                 controlled: bool = false) -> &Surface
     val s = stage_on(r.device, r.renderer, r.vg, r.k)
 
     stage = Some(s)
@@ -235,7 +238,8 @@ private frame_on(r: &Rig, c: *PlutoCanvas, tree: &View, after: &Fn(&plutovg.Canv
     r.surf.clear(1.0, 1.0, 1.0)
     r.vg.reset_transform()
     r.vg.scale(f32(r.k), f32(r.k))
-    render(tree, c, frame_rect(r.w, r.h, r.k, 0, 0, 0, 0))
+    paint_frame(tree, c, frame_rect(r.w, r.h, r.k, 0, 0, 0, 0), controlled)
+    last_placed = s.placed.len()
     after(r.vg)
     r.ui.update(as_ptr(r.surf.data()), i32(r.surf.stride()))
     s.draw_all()
@@ -248,6 +252,9 @@ private frame_on(r: &Rig, c: *PlutoCanvas, tree: &View, after: &Fn(&plutovg.Canv
     stage = None
     out
 end frame_on
+
+// How many viewports the last `frame_on` placed, read before the composite empties the list.
+private var last_placed: usize = 0
 
 // `(r, g, b)` of a pixel of an ARGB surface.
 private rgb_at(s: &Surface, x: int, y: int) -> (int, int, int)
@@ -345,6 +352,92 @@ a_clip_keeps_the_hole_inside_it()
 
     expect_rgb(out, 50, 39, 255, 0, 0, "the part in the list")
     expect_rgb(out, 50, 41, 255, 255, 255, "the ground below it, not the 3D")
+
+// Paints a child, then raises a panel over part of it, which is what an open menu over a viewport is.
+private struct Menued
+    child: &View
+    menu: &View
+    at: Rect
+
+impl View for Menued
+    measure(&self, c: *Canvas, avail: Size) -> Size = avail
+
+    paint(&self, c: *Canvas, r: Rect)
+        self.child.paint(c, r)
+        c.raise_above(self.menu, self.at)
+    end paint
+
+// Under control the snapshot paints the tree a second time, after the overlays. It must neither cut the
+// viewport's hole through a menu raised over it nor place the viewport twice.
+@test
+a_menu_over_a_viewport_survives_the_snapshot()
+    if !can_use_gpu("menu over a viewport") then return
+
+    val dev = device_for_tests()
+    val renderer = offscreen_gpu_renderer(dev).unwrap()
+    val r = rig(dev, renderer, 100, 100, 1.0)
+
+    for controlled in [false, true]
+        val v = viewport(f -> f.pass(1.0, 0.0, 0.0).unwrap().finish())
+        val menu = spacer().background(0x00FF00u32)
+        val out = frame_of(r, Menued(v, menu, Rect(10, 10, 40, 40)), controlled = controlled)
+        val what = if controlled then "with control" else "without"
+
+        expect_rgb(out, 30, 30, 0, 255, 0, s"the menu, ${what}")
+        expect_rgb(out, 80, 80, 255, 0, 0, s"the viewport beside it, ${what}")
+        assert_eq(last_placed, 1, s"the viewport placed once, ${what}")
+
+// The snapshot still reaches through a viewport to what is around it, and the input hook does not run
+// for it: a survey changes nothing.
+private var hook_runs = 0
+
+@test
+the_snapshot_pass_leaves_the_viewport_alone()
+    val v = viewport(f -> (), (c, r) -> hook_runs += 1)
+    val tree = column([button("Go", () -> ()).named("go"), v.flex()])
+    val surf = plutovg.surface(100, 100).unwrap()
+    var c = pluto_canvas(plutovg.canvas(surf).unwrap(), plutovg.font(system_font()).unwrap(), 15.0)
+    val snap = paint_frame(tree, &c, Rect(0, 0, 100, 100), true).unwrap()
+
+    assert_eq(hook_runs, 1, "the input hook ran for the frame only")
+    assert(snap.click_point("go").is_ok(), "the button is in the snapshot")
+
+private var counted = 0
+
+@test
+a_snapshot_alone_never_runs_the_input_hook_and_a_render_runs_it_once()
+    val v = viewport(f -> (), (c, r) -> counted += 1)
+    var c = recorder()
+    val at = Rect(0, 0, 100, 100)
+
+    _ = snapshot(v, &c, at)
+    assert_eq(counted, 0, "the snapshot")
+    render(v, &c, at)
+    assert_eq(counted, 1, "the render")
+
+// A drag held over a viewport under control: the snapshot after each frame must not end it, so the next
+// frame still reads the press as held and the drag as continuing from where it was.
+@test
+a_press_held_across_a_snapshot_is_still_held_on_the_next_render()
+    val held = signal(false)
+    val moved = signal((0, 0))
+    val v = viewport(f -> (), (c, r) ->
+        held.set(c.held(PointerButton.Primary))
+        moved.set(c.drag_by(r, 1, PointerButton.Primary, 0, 0))
+    )
+    var c = recorder()
+    val at = Rect(0, 0, 100, 100)
+
+    mouse_down(&c, MouseButton.Left, 20, 20)
+    render(v, &c, at)
+    assert(held.read(), "held in the first frame")
+    _ = snapshot(v, &c, at)
+    assert(held.read(), "the snapshot did not tell the hook it was let go")
+    c.point(30, 25, true)
+    render(v, &c, at)
+    assert(held.read(), "still held in the next frame")
+    assert_eq(moved.read().0, 10, "and the drag carried on: ten points right")
+    assert_eq(moved.read().1, 5, "five down")
 
 @test
 a_fractional_scale_leaves_no_partial_edge()

@@ -6,9 +6,11 @@
 //     cube                              a window, until it is closed
 //     cube --frames 300 --shot out.png  300 frames, the last written to a PNG, and the time they took
 //     cube --control /tmp/cube.sock     a window driven over the socket as well, by `curl --unix-socket`
+//     cube --still                      the cube does not turn by itself, so two runs draw the same frame
+//     cube --hidden                     the window is never shown, for a run driven over the socket
 //
 // The button is named `colour` and retitles the window, so a controller can find it in `/snapshot` and
-// see that its click landed.
+// see that its click landed. The View menu, `menu.View`, drops down over the viewport.
 //
 // The shader is Metal Shading Language, so this runs on a Mac. A program for other machines supplies a
 // format for each.
@@ -109,14 +111,26 @@ main(args: []string) -> Result[unit, string]
     var limit = 0
     var shot = ""
     var socket = ""
+    var still = false
+    var hidden = false
     var i = 1
 
-    while i + 1 < args.len
-        if args[i] == "--frames" then limit = parse_int(args[i + 1]).unwrap_or(0)
-        if args[i] == "--shot" then shot = args[i + 1]
-        if args[i] == "--control" then socket = args[i + 1]
+    while i < args.len
+        val flag = args[i]
+        val value = if i + 1 < args.len then args[i + 1] else ""
 
-        i += 2
+        if flag == "--still"
+            still = true
+        elif flag == "--hidden"
+            hidden = true
+        else
+            if flag == "--frames" then limit = parse_int(value).unwrap_or(0)
+            if flag == "--shot" then shot = value
+            if flag == "--control" then socket = value
+
+            i += 1
+
+        i += 1
 
     val turn = signal(0.5)
     val tilt = signal(0.4)
@@ -163,7 +177,17 @@ main(args: []string) -> Result[unit, string]
         tint.set(tint.read() + 1)
         _ = set_title(s"Cube, colour ${tint.read() % int(TINTS.len) + 1}")
 
+    val reset: &Fn() -> unit = () ->
+        turn.set(0.5)
+        tilt.set(0.4)
+        distance.set(5.0)
+
+    // The View menu drops down over the viewport, which is what a menu over 3D has to survive.
+    val open = signal(NO_MENU)
+
     val tree: &Fn() -> &View = () ->
+        val bar = menu_bar([menu("View", [item("Change colour", recolour), separator(),
+                                          item("Reset the view", reset)])], open)
         val panel = column([
             text("A cube").font_size(20.0),
             text("Drag to turn, wheel to zoom."),
@@ -172,12 +196,12 @@ main(args: []string) -> Result[unit, string]
             text("Drawn with SDL_GPU."),
         ], 12).padding(16).frame(240, 0).background(0x1F2430u32)
 
-        row([view.flex(), panel])
+        column([bar, row([view.flex(), panel]).flex()])
 
     val spent = signal(Totals(0, 0, 0, 0, 0, 0.0))
     val a = app("Cube", tree, () -> 0x101218u32, 1440, 900, gpu = GPU_SHADERFORMAT_MSL, control = socket,
-                on_frame = dt ->
-        turn.set(turn.read() + dt * 0.6)
+                hidden = hidden, on_frame = dt ->
+        if !still then turn.set(turn.read() + dt * 0.6)
 
         val n = spent.read()
         val t = frame_timing()
