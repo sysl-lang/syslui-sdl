@@ -255,6 +255,10 @@ private[ui_sdl] wheel_points(x: f32, y: f32) -> (real, real) =
 // moves a document by.
 private const WHEEL_STEP: real = 40.0
 
+// Where the pointer is until the first mouse event says otherwise: off the surface, as `Canvas.pointer`
+// answers from a backend with no pointer. Starting at the origin would light whatever sits in the corner.
+private[ui_sdl] const NO_POINTER: int = -1
+
 // Open the window and run until something stops it.
 //
 // **The frame is drawn every time round whether anything changed or not**, and that is not waste: a
@@ -315,8 +319,8 @@ run(a: &App) -> Result[unit, string]
 
     var tree = (a.tree)()
     var seen = writes() - 1
-    var mx = 0
-    var my = 0
+    var mx = NO_POINTER
+    var my = NO_POINTER
     var down = false
     var focused = NOBODY
     var away = false

@@ -88,6 +88,19 @@ private a_pointer_lands_in_points()
     assert(point_scale(0, 0, 2.0) == 0.5, "a size that is not known yet is still safe")
 end a_pointer_lands_in_points
 
+// Before the first mouse event nothing is being pointed at, not even what sits in the window's corner.
+@test
+private a_pointer_not_yet_seen_is_over_nothing()
+    var c = recorder()
+    val corner = Rect(0, 0, 40, 16)
+
+    c.point(NO_POINTER, NO_POINTER, false)
+    assert(!c.hovered(corner), "the corner is not lit by a pointer nobody has moved")
+
+    c.point(0, 0, false)
+    assert(c.hovered(corner), "and a real pointer at the origin does light it")
+end a_pointer_not_yet_seen_is_over_nothing
+
 // The interface is the window in points, less the system bars — and the bars are in pixels.
 @test
 private the_frame_is_the_window_less_the_bars()
