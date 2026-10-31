@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.20" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.21" }
 }
 ```
 
@@ -124,7 +124,7 @@ syslUI 0.1.5's `scroll` follows a dragged finger and the wheel, and this driver 
 - **A Mac trackpad glides on after the fingers lift**, because the driver sets
   `SDL_MAC_SCROLL_MOMENTUM` before `init`. A dragged finger does not: there is no fling yet.
 
-## Keys, double-clicks and the pointer's shape (since 0.2.20)
+## Keys, double-clicks and the pointer's shape (since 0.2.21)
 
 For syslUI 0.1.16's additions:
 

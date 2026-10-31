@@ -16,7 +16,7 @@ import sh.sysl.sdl3.{SCANCODE_BACKSPACE, SCANCODE_DELETE,
 // **A mapped key is delivered, not decided.** It reaches the focused view's `keys()`, and a field acts
 // only on the editing keys; Escape, Tab, the page keys and the function row are there for the
 // application, which is why they are mapped at all -- a field's `on_escape` and a grid's PageDown are
-// what they are for. Until 0.2.20 Escape was left unmapped, so no view in an SDL window ever heard one.
+// what they are for. Until 0.2.21 Escape was left unmapped, so no view in an SDL window ever heard one.
 //
 // **Everything else answers `None` and stays the application's**, through `on_event`.
 
