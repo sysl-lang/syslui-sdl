@@ -498,7 +498,7 @@ private drive_named(s: &Named)
         stop()
         return
 
-    s.client = Some(send(s.at, "POST", s.targets.at(s.next)))
+    s.client = Some(send(s.at, "POST", s.targets[s.next]))
     s.next += 1
 end drive_named
 
@@ -524,14 +524,14 @@ private a_click_by_reference_lands_in_the_named_control_in_a_running_application
     run(app("ctl", on_tree, on_ground, width = 240, height = 160, on_frame = on_frame, control = at)).unwrap()
 
     assert_eq(s.statuses.len(), 4)
-    assert_eq(s.statuses.at(0), 200)
-    assert_eq(s.taps_at.at(0), 1, "the named button's handler had run by the time the click was answered")
-    assert_eq(s.statuses.at(1), 404)
-    assert_eq(s.taps_at.at(1), 1)
-    assert_eq(s.statuses.at(2), 200, "plain coordinates still go straight to sdl3")
-    assert_eq(s.taps_at.at(2), 1, "and landed below the button")
-    assert_eq(s.statuses.at(3), 200)
-    assert_eq(s.taps_at.at(3), 2)
+    assert_eq(s.statuses[0], 200)
+    assert_eq(s.taps_at[0], 1, "the named button's handler had run by the time the click was answered")
+    assert_eq(s.statuses[1], 404)
+    assert_eq(s.taps_at[1], 1)
+    assert_eq(s.statuses[2], 200, "plain coordinates still go straight to sdl3")
+    assert_eq(s.taps_at[2], 1, "and landed below the button")
+    assert_eq(s.statuses[3], 200)
+    assert_eq(s.taps_at[3], 2)
     remove_dir_all(dir).unwrap()
 end a_click_by_reference_lands_in_the_named_control_in_a_running_application
 
@@ -674,7 +674,7 @@ private fetch_frame(s: &Fetches)
 
             s.statuses.push(status_of(cl))
 
-            if s.targets.at(s.next - 1) == "/shot"
+            if s.targets[s.next - 1] == "/shot"
                 val image = png.decode(body_bytes(cl)).unwrap()
                 val p = image.at(image.width / 2, image.height - 2)
 
@@ -690,7 +690,7 @@ private fetch_frame(s: &Fetches)
         stop()
         return
 
-    s.client = Some(send(s.at, "GET", s.targets.at(s.next)))
+    s.client = Some(send(s.at, "GET", s.targets[s.next]))
     s.next += 1
 end fetch_frame
 
@@ -718,14 +718,14 @@ private a_hidden_application_answers_its_own_routes_and_its_shot()
             routes = own, hidden = true)).unwrap()
 
     assert_eq(s.statuses.len(), 5)
-    assert_eq(s.statuses.at(0), 200, "the application's route")
-    assert_eq(s.bodies.at(0), "{\"mine\":true}\n")
-    assert_eq(s.statuses.at(1), 200, "the toolkit's snapshot")
-    assert(s.bodies.at(1).contains("\"save\""), s.bodies.at(1))
-    assert_eq(s.statuses.at(2), 200, "sdl3's state")
-    assert(s.bodies.at(2).contains("\"hidden\":true"), s.bodies.at(2))
-    assert_eq(s.statuses.at(3), 200, "the shot")
+    assert_eq(s.statuses[0], 200, "the application's route")
+    assert_eq(s.bodies[0], "{\"mine\":true}\n")
+    assert_eq(s.statuses[1], 200, "the toolkit's snapshot")
+    assert(s.bodies[1].contains("\"save\""), s.bodies[1])
+    assert_eq(s.statuses[2], 200, "sdl3's state")
+    assert(s.bodies[2].contains("\"hidden\":true"), s.bodies[2])
+    assert_eq(s.statuses[3], 200, "the shot")
     assert_eq(s.middle, (0x33u8, 0x66u8, 0x99u8), "the shot holds the painted ground")
-    assert_eq(s.statuses.at(4), 404, "an unknown path is still sdl3's 404")
+    assert_eq(s.statuses[4], 404, "an unknown path is still sdl3's 404")
     remove_dir_all(dir).unwrap()
 end a_hidden_application_answers_its_own_routes_and_its_shot

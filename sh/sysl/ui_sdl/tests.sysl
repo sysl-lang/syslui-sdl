@@ -2,7 +2,7 @@ module sh.sysl.ui_sdl
 @tests
 
 import sh.sysl.ui.{Canvas, Cursor, Key, Modifiers, PointerButton, PointerReader, Press, Rect, no_modifiers,
-                   recorder, render, signal, text, writes}
+                   invalidate, recorder, render, signal, text, writes}
 import sh.sysl.sdl3.{EventKind, MouseButton, SystemCursor, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, KMOD_LSHIFT, KMOD_RCTRL,
                      KMOD_CAPS, KMOD_NUM, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE,
@@ -267,6 +267,44 @@ private a_quiet_hook_rebuilds_nothing()
 
     assert(!defaulted, "the default hook is quiet")
 end a_quiet_hook_rebuilds_nothing
+
+// **State kept outside any `Signal` asks for a rebuild with `invalidate()`**, and the loop sees it as
+// it sees a write: the counter it compares has moved.
+@test
+private invalidate_rebuilds_with_no_signal_written()
+    val seen = writes()
+
+    invalidate()
+
+    val (_, stale) = advance(16000000, dt -> (), seen)
+
+    assert(stale, "the loop rebuilds though no signal changed")
+end invalidate_rebuilds_with_no_signal_written
+
+// A hook that calls it rebuilds on the frame that called it, as a write in the hook does.
+@test
+private invalidate_in_the_hook_rebuilds_this_frame()
+    val (_, stale) = advance(16000000, dt -> invalidate(), writes())
+
+    assert(stale, "the hook's request is this frame's")
+end invalidate_in_the_hook_rebuilds_this_frame
+
+// Asking twice before a frame is one rebuild: afterwards the loop has seen the counter and is quiet.
+@test
+private invalidate_twice_rebuilds_once()
+    val seen = writes()
+
+    invalidate()
+    invalidate()
+
+    val (_, first) = advance(16000000, dt -> (), seen)
+
+    assert(first, "the first frame rebuilds")
+
+    val (_, second) = advance(16000000, dt -> (), writes())
+
+    assert(!second, "and the next one, having seen the counter, does not")
+end invalidate_twice_rebuilds_once
 
 // ## Leaving the screen and coming back
 
