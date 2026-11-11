@@ -125,9 +125,14 @@ impl View for Viewport
         (self.input)(c, r)
 
         stage match
-            Some(s) -> if c.visible(r) then s.place(self, r)
+            Some(s) -> if c.visible(r) then s.place(self, landed(c, r, s.k))
             None -> ()
     end paint
+
+// Where a viewport painted at `r` lands in the window's pixels: through the transforms the canvas has
+// pushed, then the display's density. **The hole and the 3D follow a `push_transform`** the way the
+// interface's own drawing does, so a viewport inside a scaled drawing is cut where it was drawn.
+private[ui_sdl] landed(c: *Canvas, r: Rect, k: real) -> Rect = pixel_rect(c.transform().rect(r), k)
 
 // A rectangle in points, in pixels: each edge rounds on its own, so two views sharing an edge in points
 // share it in pixels at any scale.
@@ -163,14 +168,12 @@ private[ui_sdl] struct Stage
     placed: Buf[&Viewport]
     known: Buf[&Viewport]
 
-    // Note a viewport as painted at `r`, and clear its pixels out of the interface.
+    // Note a viewport as painted at `px`, in the window's pixels, and clear them out of the interface.
     //
     // **The hole is cut in whole device pixels**, so its edge has no partial coverage for the 3D to bleed
     // through at a fractional scale. The canvas's clip still applies, which is what keeps a viewport in a
     // scrolled list inside the list.
-    place(&self, v: &Viewport, r: Rect)
-        val px = pixel_rect(r, self.k)
-
+    place(&self, v: &Viewport, px: Rect)
         v.pixels = px
         self.vg.save()
         self.vg.reset_transform()

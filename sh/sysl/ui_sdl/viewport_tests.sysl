@@ -28,6 +28,21 @@ end can_use_gpu
 
 // ## Rectangles and layout
 
+// A viewport inside a `push_transform` is cut where the drawing around it put it: through the push,
+// then the density. With nothing pushed it lands where `pixel_rect` alone puts it.
+@test
+a_viewport_lands_through_the_canvas_transform()
+    var c = recorder()
+
+    assert(landed(&c, Rect(10, 20, 30, 40), 2.0) == pixel_rect(Rect(10, 20, 30, 40), 2.0), "nothing pushed")
+
+    c.push_transform(0.5, 100.0, 50.0)
+    assert(landed(&c, Rect(20, 20, 40, 40), 2.0) == Rect(220, 120, 40, 40), "halved, moved, then doubled")
+    c.push_transform(2.0, 4.0, 0.0)
+    assert(landed(&c, Rect(0, 0, 10, 10), 1.0) == Rect(102, 50, 10, 10), "and nested pushes compose")
+    c.pop_transform()
+    c.pop_transform()
+
 @test
 a_rectangle_in_points_lands_on_whole_pixels()
     val at_two = pixel_rect(Rect(10, 20, 30, 40), 2.0)
