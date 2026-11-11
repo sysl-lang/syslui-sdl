@@ -235,7 +235,7 @@ end drain
 private status_of(cl: &Client) -> int =
     sysl.text.parse_int(from_utf8_lossy(cl.got.view())[9..<12]).unwrap_or(0)
 
-private body_bytes(cl: &Client) -> []u8
+private body_bytes(cl: &Client) -> []const u8
     val at = cl.got.view().index_of("\r\n\r\n".bytes).unwrap()
 
     cl.got.view()[at + 4..<cl.got.len()]

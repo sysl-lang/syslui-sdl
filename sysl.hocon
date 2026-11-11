@@ -21,7 +21,7 @@
 package {
   name    = "syslui-sdl"
   version = "0.2.24"
-  sysl   = "0.9.0"
+  sysl   = "0.10.0"
 }
 
 // **Skitter is here for the parts of a phone SDL does not answer, and only on Android.** What this
