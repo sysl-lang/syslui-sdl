@@ -12,4 +12,5 @@ github.com/sysl-lang/syslui v0.1.18 sha256:c0651e2f63f731293ed36134f8ce8af2b6b43
 github.com/sysl-lang/syslui v0.1.19 sha256:00d27642172483dfa741a8279b6eafd54ef3b3db5b5e072dc58ef55d75e514de
 github.com/sysl-lang/syslui v0.2.0 sha256:37904d72e5863e3c725659616aca73056fb3b7f7872e50f40df733367b4e4967
 github.com/sysl-lang/syslui v0.2.1 sha256:a8243f681c06c02591f049fcf4929d5c046a39b74d07164c695ebad01ba103a7
+github.com/sysl-lang/syslui v0.2.2 sha256:2b2c4f251314638ff33a38e375284922a5981b430d5313e3491e7e29e890b5bc
 github.com/sysl-lang/toml v0.1.4 sha256:459fd45c4d0a721e67b2ecca417732f1a726bf38705d331e8d452fe4370a3683
