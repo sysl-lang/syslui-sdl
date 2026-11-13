@@ -2,7 +2,8 @@ module sh.sysl.ui_sdl
 @tests
 
 import sh.sysl.ui.{Canvas, Cursor, Key, Modifiers, PointerButton, PointerReader, Press, Rect, no_modifiers,
-                   invalidate, recorder, render, signal, text, writes}
+                   invalidate, pluto_canvas, recorder, render, signal, text, writes}
+import sh.sysl.plutovg
 import sh.sysl.sdl3.{EventKind, MouseButton, SystemCursor, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, KMOD_LSHIFT, KMOD_RCTRL,
                      KMOD_CAPS, KMOD_NUM, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE,
@@ -213,6 +214,66 @@ private a_desktop_has_no_bars_and_a_resizable_window()
     assert_eq(insets().left + insets().top + insets().right + insets().bottom, 0)
 end a_desktop_has_no_bars_and_a_resizable_window
 #endif
+
+// ## The display's density
+
+// **Every window asks for the display's pixels, with a GPU or without**, and asking takes nothing else
+// away: it is still resizable, and still hidden exactly when the application says.
+@test
+private every_window_asks_for_the_displays_density()
+    for hidden in [false, true]
+        val flags = create_flags(hidden)
+
+        assert(flags & sh.sysl.sdl3.WINDOW_HIGH_PIXEL_DENSITY != 0, s"hidden = ${hidden}")
+        assert(flags & sh.sysl.sdl3.WINDOW_RESIZABLE != 0)
+        assert_eq(flags & sh.sysl.sdl3.WINDOW_HIDDEN != 0, hidden)
+end every_window_asks_for_the_displays_density
+
+// A Mac at 2x, as the loop sees it once the window asked: 900 by 600 points over 1800 by 1200 pixels.
+// The interface is laid out in the same points as on a 1x display, and a pointer SDL reports in points
+// stays where it is.
+@test
+private a_retina_window_is_laid_out_in_the_same_points()
+    val k = scale_of(2.0)
+
+    assert(frame_rect(1800, 1200, k, 0, 0, 0, 0) == Rect(0, 0, 900, 600), "the same layout as 1x")
+    assert(frame_rect(900, 600, scale_of(1.0), 0, 0, 0, 0) == Rect(0, 0, 900, 600))
+    assert(point_scale(900, 1800, k) == 1.0, "a pointer at a point is at that point")
+    assert(int(450.0 * point_scale(900, 1800, k)) == 450)
+end a_retina_window_is_laid_out_in_the_same_points
+
+// **The canvas is handed the density, and a control laid out in points is drawn on twice the pixels.**
+// A fill at points (10, 5) to (20, 10) covers pixels (20, 10) to (40, 20) and nothing at the 1x place.
+@test
+private the_canvas_draws_points_at_the_displays_density()
+    for k in [2.0, 1.5]
+        val surf = plutovg.surface(80, 40).unwrap()
+        val vg = plutovg.canvas(surf).unwrap()
+        var c = pluto_canvas(vg, plutovg.font(system_font()).unwrap(), 15.0)
+
+        surf.clear(0.0, 0.0, 0.0, 0.0)
+        at_density(vg, k)
+
+        assert(c.pixel_scale() == k, s"the canvas answers ${k}")
+
+        c.fill(Rect(10, 5, 10, 5), 0xFFFFFFu32, 0)
+
+        val px = surf.data()
+        val alpha = (x: int, y: int) -> px[y * surf.stride() + x * 4 + 3]
+
+        assert_eq(alpha(int(15.0 * k), int(7.0 * k)), u8(255), s"the middle of the fill, at ${k}")
+        assert_eq(alpha(int(21.0 * k), int(7.0 * k)), u8(0), "and nothing past its right edge")
+        assert_eq(alpha(int(15.0 * k), int(11.0 * k)), u8(0), "or its bottom")
+
+    // Asked again, the scale replaces the last one rather than compounding it.
+    val surf = plutovg.surface(8, 8).unwrap()
+    val vg = plutovg.canvas(surf).unwrap()
+    var c = pluto_canvas(vg, plutovg.font(system_font()).unwrap(), 15.0)
+
+    at_density(vg, 2.0)
+    at_density(vg, 2.0)
+    assert(c.pixel_scale() == 2.0, "twice at 2 is still 2")
+end the_canvas_draws_points_at_the_displays_density
 
 // ## The application's frame
 

@@ -311,11 +311,7 @@ run(a: &App) -> Result[unit, string]
 
     if path == "" then return Err("no font this driver knows about is on this machine")
 
-    // **Only a window asking for the display's density gets it**, so a Mac's other windows here are drawn
-    // at one pixel to a point and magnified by the system. A viewport wants the real pixels.
-    val density = if a.gpu != 0 then WINDOW_HIGH_PIXEL_DENSITY else 0u64
-    val window = create_window(a.title, i32(a.width), i32(a.height),
-                               window_flags() | density | shown_flags(a.hidden)).expect("a window")
+    val window = create_window(a.title, i32(a.width), i32(a.height), create_flags(a.hidden)).expect("a window")
 
     // **An application with viewports has its renderer on a GPU device**, and one without never makes a
     // device. The device is declared first so it outlives the renderer, as SDL requires.
@@ -493,8 +489,7 @@ run(a: &App) -> Result[unit, string]
         // **The scale is set on the canvas rather than applied to the layout**, so a rounded corner
         // and a glyph are rasterized at the pixel size they end up at. Scaling the finished picture
         // instead would be one bilinear blur over the whole interface.
-        vg.reset_transform()
-        vg.scale(f32(k), f32(k))
+        at_density(vg, k)
 
         // **`render` rather than `measure` and `paint`**, because a frame is the tree *and* whatever
         // the tree raised above itself — and because it is what ends the frame's keys.
@@ -552,6 +547,21 @@ end run
 
 // The flag an application's `hidden` adds to its window: SDL's hidden window, or nothing.
 private[ui_sdl] shown_flags(hidden: bool) -> u64 = if hidden then WINDOW_HIDDEN else 0
+
+// Everything `run` creates its window with.
+//
+// **Every window asks for the display's own density**, with a GPU or without. A Mac gives a window that
+// does not ask one pixel to a point and magnifies the finished picture, which is every glyph and every
+// rounded edge drawn soft. Asking changes no size: the window is still made, laid out and pointed at in
+// points, and only the surface under it is the display's pixels — which the frame loop already measures
+// rather than assumes.
+private[ui_sdl] create_flags(hidden: bool) -> u64 = window_flags() | WINDOW_HIGH_PIXEL_DENSITY | shown_flags(hidden)
+
+// Point a drawing canvas at the display's density: `k` pixels to a point, from the origin, so a tree
+// measured in points is rasterized in pixels and `Canvas.pixel_scale` answers `k`.
+private[ui_sdl] at_density(vg: &plutovg.Canvas, k: real)
+    vg.reset_transform()
+    vg.scale(f32(k), f32(k))
 
 // Paint one frame of `tree` at `at`, and under control take its snapshot as well. The snapshot is a
 // second pass through a canvas that draws nothing, after the frame's overlays, so nothing it reaches may

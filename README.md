@@ -88,7 +88,9 @@ texture are the same call. Three things are left, and all three are handled here
   the finished picture instead is one bilinear blur over the whole interface. **A pointer is reported
   in window units and the drawing is in pixels**, and which convention a platform uses is the thing
   nothing documents the same way twice — so the ratio is measured from `size_in_pixels` against
-  `size` rather than assumed.
+  `size` rather than assumed. **Every window asks for the display's real density** (since 0.2.27; before
+  it, only an application with a `gpu`), so on a Mac the interface is drawn at two pixels to a point rather
+  than drawn at one and magnified by the system. The window's size is still given in points.
 - **The system bars.** From Android API 35 an app draws edge to edge whether it asks to or not.
   `window.safe_area()` is the obvious answer and the wrong rectangle: SDL builds it from five inset
   types at once because it answers *where can a button go*, which on a gesture-navigation phone is 78
@@ -219,8 +221,6 @@ run(app("Cube", () -> row([view.flex(), panel]), ground, gpu = GPU_SHADERFORMAT_
   channel above its alpha, both asserted. A viewport cuts its rectangle out of the surface when it is
   painted, on whole device pixels. What the tree painted before it is gone from there, so a background
   behind it does not hide it; what is painted after it lands on top; a clip in force limits the hole.
-- **Such a window asks for the display's real density**, which an application that did not opt in does
-  not get on a Mac.
 - **`save_frame(file)`** writes the next frame to a PNG, read back from the renderer, in either kind of
   application. **`frame_timing()`** says where the last frame's time went.
 
@@ -295,10 +295,11 @@ curl --unix-socket $S http://app/shot -o shot.png
   for a controlled run that should not appear on screen. It paints every frame as a visible one does, and
   `/shot` reads the frame back; sdl3's `/state` says `"hidden":true`. The default is a visible window.
 - **Coordinates.** `/click` and `/drag` take window coordinates, which is what SDL's mouse events carry;
-  a snapshot is in the interface's points. They agree when the window asked for the display's density (an
-  application with a `gpu`) or when the display scale is 1. Where they do not, divide a snapshot's point
-  by the ratio the loop turns the pointer into points with (the display scale, when a window is in pixels).
-  `/click?ref=` does this for you.
+  a snapshot is in the interface's points. They agree on a Mac, where a window is in points, and wherever
+  the display scale is 1. Where they do not, divide a snapshot's point by the ratio the loop turns the
+  pointer into points with (the display scale, when a window is in pixels). `/click?ref=` does this for you.
+- **A shot is in the display's pixels** (since 0.2.27): on a 2× Mac a `/shot` of a 240×160 window is
+  480×320, and a snapshot's point `(x, y)` is the shot's pixel `(2x, 2y)`.
 - **The socket's path must be short**: a Unix socket's address holds about a hundred bytes, so a path deep
   in a temporary directory is refused at `listen` with "too long for a socket's address".
 
