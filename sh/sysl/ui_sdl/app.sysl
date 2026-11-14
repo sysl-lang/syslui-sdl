@@ -3,8 +3,9 @@ module sh.sysl.ui_sdl
 import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{BlendMode, PixelFormat, Renderer, ScaleMode, Surface, GpuDevice, TextureAccess, Event, EventKind,
-                     init, create_window, create_gpu_renderer, gpu_device, poll_event, ticks_ns, mod_state, error,
-                     set_hint, INIT_VIDEO, WINDOW_HIDDEN, WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE, Window}
+                     SystemTheme, init, create_window, create_gpu_renderer, gpu_device, poll_event, ticks_ns,
+                     mod_state, error, set_hint, system_theme, INIT_VIDEO, WINDOW_HIDDEN,
+                     WINDOW_HIGH_PIXEL_DENSITY, WINDOW_RESIZABLE, Window}
 import sh.sysl.sdl3.control.{Control, Pass, Request, Routed, listen}
 import sysl.slices.as_ptr
 
@@ -204,6 +205,46 @@ private png_of(s: &Surface, file: string) -> bool
     out.write_png(file)
 end png_of
 
+// ## Light and dark
+
+// Whether the machine is set to a light or a dark interface — System Settings → Appearance on a Mac.
+enum Appearance
+    Light
+    Dark
+
+// The system's appearance, as the running window last heard it.
+//
+// **A tree that reads it follows the setting live**, with nothing else to write: `run` reads the
+// system's answer before it builds the first tree, and when the setting changes it records the new
+// one and asks for a rebuild, so the next frame is built from it. An application that offers its own
+// override (System / Light / Dark) reads this only for "System":
+//
+//     val root = () -> page().restyle(t -> if appearance() == Dark then dark() else light())
+//
+// **A platform with no such setting reads as `Light`**, as does SDL's `Unknown`, so a program always
+// has a scheme to draw in. Before `run` has started it answers `Light` too.
+appearance() -> Appearance = heard
+private var heard: Appearance = Light
+
+// What SDL's answer means here: dark only when it says dark.
+private[ui_sdl] appearance_of(t: SystemTheme) -> Appearance = if t == SystemTheme.Dark then Dark else Light
+
+// Record the system's appearance after `kind`, asking `ask` only when the event says it changed; and
+// ask for a rebuild only when the answer differs from the last, since SDL can send the event for a
+// change (a high-contrast or accent setting, on some platforms) that leaves light and dark alone.
+// Answers whether the event was a theme change.
+private[ui_sdl] follow_theme(kind: EventKind, ask: &Fn() -> SystemTheme) -> bool
+    if kind != EventKind.SystemThemeChanged then return false
+
+    hear(appearance_of(ask()))
+    true
+
+// Take `next` as the system's appearance, rebuilding when it is news.
+private[ui_sdl] hear(next: Appearance)
+    if next != heard
+        heard = next
+        invalidate()
+
 // ## The loop
 
 // The application's share of a frame: how long the frame was, the application's own work, and whether
@@ -341,6 +382,9 @@ run(a: &App) -> Result[unit, string]
                                       i32(1)).expect("a streaming texture")
     var c = pluto_canvas(vg, face, a.size)
 
+    // Before the first tree, so a window opened on a dark desktop is dark from its first frame.
+    hear(appearance_of(system_theme()))
+
     var tree = (a.tree)()
 
     // **The socket is opened only when one was named**, so an application without it listens on
@@ -415,6 +459,10 @@ run(a: &App) -> Result[unit, string]
                     away = lifecycle(kind, away, a.on_pause, a.on_resume)
 
                     if kind == EventKind.Quit then stopped = true
+
+                    // **The setting is asked again rather than read from the event**, which carries
+                    // none; the rebuild it may request is this frame's.
+                    elif follow_theme(kind, system_theme) then ()
 
                     // **Typed text arrives already composed**, which is why a field takes a run of
                     // text rather than a character.

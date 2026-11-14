@@ -4,7 +4,7 @@ module sh.sysl.ui_sdl
 import sh.sysl.ui.{Canvas, Cursor, Key, Modifiers, PointerButton, PointerReader, Press, Rect, no_modifiers,
                    invalidate, pluto_canvas, recorder, render, signal, text, writes}
 import sh.sysl.plutovg
-import sh.sysl.sdl3.{EventKind, MouseButton, SystemCursor, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, KMOD_LSHIFT, KMOD_RCTRL,
+import sh.sysl.sdl3.{EventKind, MouseButton, SystemCursor, SystemTheme, KMOD_SHIFT, KMOD_CTRL, KMOD_ALT, KMOD_GUI, KMOD_LSHIFT, KMOD_RCTRL,
                      KMOD_CAPS, KMOD_NUM, SCANCODE_BACKSPACE, SCANCODE_LEFT,
                      SCANCODE_RIGHT, SCANCODE_HOME, SCANCODE_RETURN, SCANCODE_A, SCANCODE_ESCAPE,
                      SCANCODE_END, SCANCODE_DELETE, SCANCODE_DOWN, SCANCODE_TAB, SCANCODE_INSERT,
@@ -431,6 +431,74 @@ private an_unrelated_event_fires_nothing()
     assert(lifecycle(EventKind.DidEnterBackground, false, a.on_pause, a.on_resume),
            "the default hooks still mark the crossing")
 end an_unrelated_event_fires_nothing
+
+// ## Light and dark
+
+// **Only SDL's `Dark` is dark.** A machine with no setting answers `Unknown`, and a value the binding
+// does not name is no better: both draw light, so an interface always has a scheme.
+@test
+private the_system_theme_maps_to_light_or_dark()
+    assert(appearance_of(SystemTheme.Dark) == Dark, "dark")
+    assert(appearance_of(SystemTheme.Light) == Light, "light")
+    assert(appearance_of(SystemTheme.Unknown) == Light, "unknown reads as light")
+    assert(appearance_of(SystemTheme.Other(7)) == Light, "an unnamed theme reads as light")
+
+// **A theme change is heard, recorded and rebuilt from**, on the frame that heard it: the counter the
+// loop compares has moved, so a tree reading `appearance()` is built again and sees the new answer.
+@test
+private a_theme_change_rebuilds_with_the_new_appearance()
+    hear(Light)
+
+    val seen = writes()
+
+    assert(follow_theme(EventKind.SystemThemeChanged, () -> SystemTheme.Dark), "a theme change")
+    assert(appearance() == Dark, "the new appearance is read")
+
+    val (_, stale) = advance(16000000, dt -> (), seen)
+
+    assert(stale, "and the tree is rebuilt")
+
+    val back = writes()
+
+    follow_theme(EventKind.SystemThemeChanged, () -> SystemTheme.Light)
+    assert(appearance() == Light, "and back")
+    assert(writes() != back, "rebuilt again")
+end a_theme_change_rebuilds_with_the_new_appearance
+
+// **The event fires for changes that leave light and dark alone**, and those rebuild nothing: the
+// answer is the one already drawn.
+@test
+private the_same_appearance_again_rebuilds_nothing()
+    hear(Dark)
+
+    val seen = writes()
+
+    assert(follow_theme(EventKind.SystemThemeChanged, () -> SystemTheme.Dark))
+    assert(appearance() == Dark)
+    assert_eq(writes(), seen, "dark again is no news")
+
+    hear(Light)
+
+    val quiet = writes()
+
+    follow_theme(EventKind.SystemThemeChanged, () -> SystemTheme.Unknown)
+    assert_eq(writes(), quiet, "unknown after light is no news either")
+end the_same_appearance_again_rebuilds_nothing
+
+// **Every other event leaves the setting alone and never asks SDL**, so a mouse move costs nothing.
+@test
+private an_unrelated_event_asks_nothing()
+    hear(Light)
+
+    val seen = writes()
+    val never: &Fn() -> SystemTheme = () -> panic("SDL was asked for an event that is not a theme change")
+
+    for k in [EventKind.MouseMotion, EventKind.KeyDown, EventKind.WindowResized, EventKind.Quit]
+        assert(!follow_theme(k, never), "not a theme change")
+
+    assert(appearance() == Light, "the appearance is unchanged")
+    assert_eq(writes(), seen, "nothing rebuilt")
+end an_unrelated_event_asks_nothing
 
 // ## The wheel
 
