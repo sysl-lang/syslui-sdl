@@ -7,7 +7,7 @@ module sh.sysl.ui_sdl
 // process would see it.
 
 import sh.sysl.ui.*
-import sh.sysl.sdl3.{HINT_VIDEO_DRIVER, INIT_VIDEO, MouseButton, PixelFormat, Renderer, Surface, WINDOW_HIDDEN, Window, create_window,
+import sh.sysl.sdl3.{Event, EventKind, HINT_VIDEO_DRIVER, INIT_VIDEO, MouseButton, PixelFormat, Renderer, Surface, WINDOW_HIDDEN, Window, create_window,
                      init, rgb, set_hint, ticks_ns}
 import sh.sysl.sdl3.c
 import sh.sysl.sdl3.control.{Forward, Header, Pass, Pointer, Request, Respond, Routed, listen}
@@ -729,3 +729,76 @@ private a_hidden_application_answers_its_own_routes_and_its_shot()
     assert_eq(s.statuses[4], 404, "an unknown path is still sdl3's 404")
     remove_dir_all(dir).unwrap()
 end a_hidden_application_answers_its_own_routes_and_its_shot
+
+// ## Whether a field has the keyboard
+
+// The loop with a field, sent keys and clicks between frames, and what `typing()` answered each time a
+// key reached `on_event`.
+private struct Typist
+    at: string
+    targets: Buf[string]
+    next: usize
+    client: Option[&Client]
+    heard: Buf[bool]
+    frames: int
+    started: u64
+
+private drive_typist(s: &Typist)
+    s.frames += 1
+
+    if s.frames == 1 then s.started = ticks_ns()
+    if ticks_ns() - s.started > 10000000000u64 then stop()
+
+    s.client match
+        Some(cl) ->
+            drain(cl)
+
+            if !cl.over then return
+
+            s.client = None
+        None -> ()
+
+    if s.next >= s.targets.len()
+        stop()
+        return
+
+    s.client = Some(send(s.at, "POST", s.targets[s.next]))
+    s.next += 1
+end drive_typist
+
+@test
+private typing_answers_whether_a_field_had_the_keyboard_when_the_key_arrived()
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+    assert(!typing(), "before run")
+
+    val dir = make_temp_dir("syslui-ctl-").unwrap()
+    val at = join(dir, "app.sock")
+    val words = signal("")
+    val tree = column([text_field(words, 1).named("field"), text("ready")])
+    val targets: Buf[string] = buf()
+
+    // A key with nothing focused; the field clicked and two keys; empty space clicked and a key.
+    for t in ["/key?key=r", "/click?ref=field", "/key?key=r", "/key?key=del", "/click?x=200&y=140", "/key?key=r"]
+        targets.push(t)
+
+    val s: &Typist = Typist(at, targets, 0, None, buf(), 0, 0)
+    val on_tree: &Fn() -> &View = () -> tree
+    val on_ground: &Fn() -> u32 = () -> 0x000000u32
+    val on_frame: &Fn(real) -> unit = dt -> drive_typist(s)
+    val on_event: &Fn(Event) -> bool = e ->
+        if e.kind() == EventKind.KeyDown then s.heard.push(typing())
+
+        false
+
+    run(app("typing", on_tree, on_ground, width = 240, height = 160, on_event = on_event, on_frame = on_frame,
+            control = at)).unwrap()
+
+    assert_eq(s.next, targets.len(), "every request was answered")
+    assert_eq(s.heard.len(), 4)
+    assert(!s.heard[0], "no field had been clicked")
+    assert(s.heard[1], "the field had the keyboard")
+    assert(s.heard[2], "and kept it across keys")
+    assert(!s.heard[3], "a press in empty space took it away")
+    assert(!typing(), "after run")
+    remove_dir_all(dir).unwrap()
+end typing_answers_whether_a_field_had_the_keyboard_when_the_key_arrived

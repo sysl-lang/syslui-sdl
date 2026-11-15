@@ -5,7 +5,7 @@ one driver, for a desktop and for a phone.**
 
 ```
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.31" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.32" }
 }
 ```
 
@@ -161,7 +161,13 @@ For syslUI 0.1.16's additions:
 - **Its shortcuts.** `on_event` sees every event before the driver does and answers `true` to say it
   has dealt with one — which is where ⌘C and escape go. A driver that guessed at those would be
   wrong for the second program that used it. The wheel is the driver's since 0.2.2, because it
-  scrolls a list; a program wanting it for something else answers `true` to it here.
+  scrolls a list; a program wanting it for something else answers `true` to it here. **A shortcut that
+  is a plain key asks `typing()` first** (since 0.2.32): it is true while a text field has the keyboard,
+  the focus the last frame was drawn with, so `r` typed into a field is not also the program's `r`:
+
+  ```
+  val on_event = e -> e.kind() == EventKind.KeyDown && !typing() && shortcut(e)
+  ```
 - **Its own work, once a frame.** `on_frame` (since 0.2.1) is handed the frame's step in seconds —
   clamped, like the animations' — after the events and before the loop decides whether to rebuild,
   so a signal written there rebuilds the tree on the same frame. It is for a program that is not
@@ -353,6 +359,8 @@ the built-ins and its `Pass` falls through to them, and a hidden window, driven 
 route, `/snapshot`, `/state` (hidden) and a `/shot` holding the painted ground. On the viewport side, a menu
 raised over a viewport keeps its pixels with control on and off and the viewport is placed once, and the
 snapshot pass never runs a viewport's `input`, so a press held across it is still held on the next frame.
+`typing()`, read from `on_event` as `/key` and `/click` arrive, is false before a field is clicked, true
+across keys once it is, false again after a press in empty space, and false before and after `run`.
 
 ## Licence
 

@@ -50,7 +50,9 @@ private[ui_sdl] window_flags() -> u64 = WINDOW_RESIZABLE
 //   - **the JNI method that reports the system bars**, whose symbol is mangled from the
 //     application's own package name and so cannot live in a library — it calls `set_insets` below;
 //   - **its shortcuts**: ⌘C, escape. `on_event` sees every event first, the wheel included, so an
-//     application that wants the wheel for something other than scrolling answers `true` to it.
+//     application that wants the wheel for something other than scrolling answers `true` to it, and
+//     one whose shortcuts are plain letters asks `typing()` first, so that a key meant for a field
+//     is left to the field.
 
 // Where the interface is drawn, what it is, and what the window is cleared to.
 //
@@ -245,6 +247,23 @@ private[ui_sdl] hear(next: Appearance)
         heard = next
         invalidate()
 
+// ## The keyboard
+
+// Whether a view has the keyboard: true while a text field is focused, so that a key reaching
+// `on_event` is about to be typed into it.
+//
+// **An application whose shortcuts are plain keys asks this before acting on one**, and answers
+// `false` while it is true, so the key goes on to the field:
+//
+//     val on_event = e -> e.kind() == EventKind.KeyDown && !typing() && shortcut(e)
+//
+// **It is the focus the last frame was drawn with**, because focus moves when a frame is drawn: a key
+// that arrives in the same batch of events as the click focusing a field still reads `false`. A
+// resized window draws on a fresh canvas, which holds no focus, so it reads `false` from then until a
+// field is focused again. Before `run` has started, and after it returns, it answers `false`.
+typing() -> bool = keyboard_taken
+private var keyboard_taken: bool = false
+
 // ## The loop
 
 // The application's share of a frame: how long the frame was, the application's own work, and whether
@@ -432,6 +451,7 @@ run(a: &App) -> Result[unit, string]
             have_w = int(pw)
             have_h = int(ph)
             focused = NOBODY
+            keyboard_taken = false
 
             device match
                 Some(d) ->
@@ -554,6 +574,10 @@ run(a: &App) -> Result[unit, string]
             Some(s) -> shown.snap = Some(s)
             None -> ()
 
+        // **After `render` too**, which is where a tap focuses a field or blurs it, so the next batch
+        // of events is asked about the focus the user is looking at.
+        keyboard_taken = c.focus() != NOBODY
+
         // **After `render`, which settled the frame's answer**: the shape the views asked for under
         // where the pointer was this frame, or the arrow.
         pointing.follow(c.shape())
@@ -585,6 +609,7 @@ run(a: &App) -> Result[unit, string]
         None -> ()
 
     live = None
+    keyboard_taken = false
 
     control match
         Some(ctl) -> ctl.close()
